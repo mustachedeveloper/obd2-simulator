@@ -1,0 +1,71 @@
+import {SimulatorEngine} from '../core/SimulatorEngine';
+import {GASOLINE_PROFILE} from '../profiles/gasoline';
+import {DIESEL_PROFILE, dieselDrivingModel} from '../profiles/diesel';
+import type {VehicleProfile} from '../core/types';
+import {createTcpServer} from './tcp-server';
+
+// Tiny hand-rolled CLI (zero dependencies):
+//   npx obd2-simulator --port 35000 --profile diesel --dtc P0301 --seed 7
+
+interface CliOptions {
+    port: number;
+    profile: 'gasoline' | 'diesel';
+    dtcs: string[];
+    seed: number;
+}
+
+function parseArgs(argv: string[]): CliOptions | null {
+    const options: CliOptions = {port: 35000, profile: 'gasoline', dtcs: [], seed: 42};
+    for (let i = 0; i < argv.length; i++) {
+        const arg = argv[i];
+        const next = () => argv[++i];
+        if (arg === '--port' || arg === '-p') options.port = Number.parseInt(next() ?? '', 10);
+        else if (arg === '--profile') {
+            const value = next();
+            if (value !== 'gasoline' && value !== 'diesel') return null;
+            options.profile = value;
+        } else if (arg === '--dtc') options.dtcs.push((next() ?? '').toUpperCase());
+        else if (arg === '--seed') options.seed = Number.parseInt(next() ?? '', 10);
+        else if (arg === '--help' || arg === '-h') return null;
+        else return null;
+    }
+    if (!Number.isFinite(options.port) || !Number.isFinite(options.seed)) return null;
+    return options;
+}
+
+const options = parseArgs(process.argv.slice(2));
+if (!options) {
+    console.log(
+        [
+            'Usage: obd2-simulator [options]',
+            '',
+            '  --port, -p <n>       TCP port to listen on (default 35000)',
+            '  --profile <name>     gasoline | diesel (default gasoline)',
+            '  --dtc <code>         inject a stored DTC, repeatable (e.g. --dtc P0301)',
+            '  --seed <n>           jitter seed for reproducible runs (default 42)',
+            '',
+            'Point any OBD app at this host:port as a WiFi ELM327 adapter.',
+        ].join('\n'),
+    );
+    process.exit(options === null && process.argv.slice(2).some((a) => a === '--help' || a === '-h') ? 0 : 1);
+}
+
+const profile: VehicleProfile = options.profile === 'diesel' ? DIESEL_PROFILE : GASOLINE_PROFILE;
+
+createTcpServer({
+    port: options.port,
+    engineFactory: () => {
+        const engine = new SimulatorEngine({
+            profile,
+            model: options.profile === 'diesel' ? dieselDrivingModel() : undefined,
+            seed: options.seed,
+        });
+        for (const code of options.dtcs) engine.injectDtc(code);
+        return engine;
+    },
+    onListening: (port) => {
+        console.log(`obd2-simulator: ${profile.name} vehicle (VIN ${profile.vin}) listening on port ${port}`);
+        console.log('Connect any OBD app to this host:port as a WiFi ELM327 adapter. Ctrl+C to stop.');
+    },
+    onConnection: (remote) => console.log(`client connected: ${remote}`),
+});

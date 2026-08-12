@@ -1,0 +1,60 @@
+{
+    "name": "obd2-simulator",
+    "version": "0.1.0",
+    "description": "Zero-dependency ELM327 / OBD-II vehicle simulator — a fake car for testing diagnostic apps. In-process link for React Native/browser tests, TCP server that impersonates a WiFi ELM327 adapter for any OBD app.",
+    "license": "MIT",
+    "author": "Emre Yıldız <mh.emreyildiz@gmail.com>",
+    "type": "module",
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js",
+            "require": "./dist/index.cjs"
+        },
+        "./node": {
+            "types": "./dist/node/index.d.ts",
+            "import": "./dist/node/index.js",
+            "require": "./dist/node/index.cjs"
+        }
+    },
+    "bin": {
+        "obd2-simulator": "./dist/node/cli.js"
+    },
+    "files": [
+        "dist"
+    ],
+    "sideEffects": false,
+    "engines": {
+        "node": ">=18"
+    },
+    "scripts": {
+        "build": "tsup",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "typecheck": "tsc --noEmit",
+        "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+    },
+    "keywords": [
+        "obd2",
+        "obd-ii",
+        "elm327",
+        "can",
+        "simulator",
+        "emulator",
+        "ecu",
+        "vehicle",
+        "diagnostics",
+        "j1979",
+        "automotive",
+        "testing"
+    ],
+    "devDependencies": {
+        "@types/node": "^26.2.0",
+        "tsup": "^8.3.5",
+        "typescript": "^5.7.2",
+        "vitest": "^2.1.8"
+    }
+}
