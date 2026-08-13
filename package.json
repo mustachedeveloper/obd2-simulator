@@ -1,6 +1,6 @@
 {
     "name": "obd2-simulator",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Zero-dependency ELM327 / OBD-II vehicle simulator — a fake car for testing diagnostic apps. In-process link for React Native/browser tests, TCP server that impersonates a WiFi ELM327 adapter for any OBD app.",
     "license": "MIT",
     "author": "Emre Yıldız <mh.emreyildiz@gmail.com>",

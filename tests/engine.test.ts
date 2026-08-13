@@ -136,6 +136,56 @@ describe('mode 06 monitor tests', () => {
     });
 });
 
+describe('extended coverage (v0.2.0)', () => {
+    it('serves the odometer and accumulates driven distance', () => {
+        const idle = engineAt(0);
+        const raw = idle.handleCommand('01A6');
+        expect(raw.startsWith('41A6')).toBe(true);
+        const tenths = Number.parseInt(raw.slice(4), 16);
+        expect(tenths / 10).toBeCloseTo(84_213, 0);
+
+        // Two full driving cycles ≈ 3.4 km further.
+        const later = engineAt(192_000);
+        const laterTenths = Number.parseInt(later.handleCommand('01A6').slice(4), 16);
+        expect(laterTenths / 10 - tenths / 10).toBeCloseTo(3.4, 1);
+    });
+
+    it('gates the gear ratio on motion', () => {
+        expect(engineAt(0).handleCommand('01A4')).toBe('NO DATA'); // standstill
+        const cruising = engineAt(60_000).handleCommand('01A4');
+        expect(cruising.startsWith('41A4')).toBe(true);
+    });
+
+    it('encodes packet PIDs with their support bitmaps', () => {
+        const engine = engineAt(60_000);
+        // 0x67 coolant sensors: bitmap 0x03 + two temp bytes.
+        const coolant = engine.handleCommand('0167');
+        expect(coolant.startsWith('416703')).toBe(true);
+        expect(coolant.length).toBe(4 + 3 * 2);
+    });
+
+    it('serves the diesel pack on the diesel profile only', () => {
+        const gasoline = engineAt(0);
+        expect(gasoline.handleCommand('019B')).toBe('NO DATA');
+
+        const diesel = engineAt(0, {profile: DIESEL_PROFILE, model: dieselDrivingModel()});
+        const def = diesel.handleCommand('019B');
+        expect(def.startsWith('419B')).toBe(true);
+        // DEF level byte D ≈ 78%.
+        const levelByte = Number.parseInt(def.slice(4 + 6, 4 + 8), 16);
+        expect((levelByte * 100) / 255).toBeCloseTo(78, 0);
+    });
+
+    it('advertises the odometer in the 0xA0 mask block', () => {
+        const engine = engineAt(0);
+        const mask = engine.handleCommand('01A0');
+        expect(mask.startsWith('41A0')).toBe(true);
+        // PID 0xA6 → offset 5 in the block → byte 0 bit (0x80 >> 5) = 0x04.
+        const firstByte = Number.parseInt(mask.slice(4, 6), 16);
+        expect(firstByte & 0x04).toBe(0x04);
+    });
+});
+
 describe('mode 09 vehicle info', () => {
     it('serves the VIN in ISO-TP framing', () => {
         const engine = engineAt(0);
