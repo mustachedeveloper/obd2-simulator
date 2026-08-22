@@ -1,5 +1,6 @@
 import type {LinkStatus} from '../core/types';
-import {SimulatorEngine, checkQueueCount} from '../core/SimulatorEngine';
+import type {SimulatorEngine} from '../core/SimulatorEngine';
+import {checkQueueCount} from '../core/snapshot';
 
 // In-process link: the simulator behaving like a connected serial adapter.
 // Platform-agnostic (works in React Native, Node and browsers) — timers are
@@ -11,26 +12,40 @@ import {SimulatorEngine, checkQueueCount} from '../core/SimulatorEngine';
 
 export interface MemoryLinkOptions {
     connectDelayMs?: number;
-    // Fixed base latency replacing the persona's baseLatencyMs.
+    /**
+     * Fixed base latency replacing the persona's baseLatencyMs.
+     */
     responseDelayMs?: number;
-    // Replaces the persona's jitter (0 → deterministic delays).
+    /**
+     * Replaces the persona's jitter (0 → deterministic delays).
+     */
     jitterMs?: number;
-    // false → ignore the ATST wait window, so responseDelayMs (+ jitter) is
-    // the whole delay, as in 0.2.0. Default true.
+    /**
+     * false → ignore the ATST wait window, so responseDelayMs (+ jitter) is
+     * the whole delay, as in 0.2.0. Default true.
+     */
     includeWaitWindow?: boolean;
-    // Responses longer than this are emitted in two chunks.
+    /**
+     * Responses longer than this are emitted in two chunks.
+     */
     chunkSplitThreshold?: number;
-    // Oldest history entries are dropped beyond this many.
+    /**
+     * Oldest history entries are dropped beyond this many.
+     */
     historyLimit?: number;
 }
 
-// Ways the next response can be damaged on the wire: the '>' prompt never
-// arrives, only the first half is delivered, or noise bytes precede it.
+/**
+ * Ways the next response can be damaged on the wire: the '>' prompt never
+ * arrives, only the first half is delivered, or noise bytes precede it.
+ */
 export type LinkCorruption = 'drop-prompt' | 'truncate' | 'garbage';
 
 const GARBAGE_PREFIX = '\u00ff\u00ff';
 
-// One exchange as the link saw it; `at` is the wall-clock write time.
+/**
+ * One exchange as the link saw it; `at` is the wall-clock write time.
+ */
 export interface CommandLogEntry {
     command: string;
     response: string;
@@ -80,7 +95,9 @@ export class MemoryLink {
         return this.engine;
     }
 
-    // Every exchange since connect (or clearHistory), oldest first.
+    /**
+     * Every exchange since connect (or clearHistory), oldest first.
+     */
     get history(): readonly CommandLogEntry[] {
         return this.log;
     }
@@ -89,8 +106,10 @@ export class MemoryLink {
         this.log = [];
     }
 
-    // Damages the next `count` responses in order (fault injection for the
-    // consumer's buffering / timeout logic).
+    /**
+     * Damages the next `count` responses in order (fault injection for the
+     * consumer's buffering / timeout logic).
+     */
     corruptNext(kind: LinkCorruption, count = 1): void {
         this.corruptions = [...this.corruptions, ...new Array<LinkCorruption>(checkQueueCount(count)).fill(kind)];
     }
@@ -99,8 +118,10 @@ export class MemoryLink {
         return this.corruptions;
     }
 
-    // The adapter loses power and comes back: settings reset, the banner
-    // shows up on the wire unprompted (after whatever was still queued).
+    /**
+     * The adapter loses power and comes back: settings reset, the banner
+     * shows up on the wire unprompted (after whatever was still queued).
+     */
     simulateAdapterReset(): void {
         const wire = this.engine.resetAdapter();
         const session = this.session;

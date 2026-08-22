@@ -31,7 +31,7 @@ const isIgnition = (value: string): value is IgnitionState => (IGNITION_STATES a
 const isFault = (value: string): value is AdapterFault => (ADAPTER_FAULTS as readonly string[]).includes(value);
 
 function apply(line: string, engines: readonly SimulatorEngine[]): string {
-    const [verb, ...args] = line.trim().split(/\s+/);
+    const [verb = '', ...args] = line.trim().split(/\s+/);
     const each = (action: (engine: SimulatorEngine) => void, summary: string): string => {
         for (const engine of engines) action(engine);
         return `ok ${engines.length} engine(s): ${summary}`;
@@ -40,16 +40,19 @@ function apply(line: string, engines: readonly SimulatorEngine[]): string {
         case 'dtc': {
             const [code, status = 'stored'] = args;
             if (!code) fail('dtc expects a code, e.g. dtc P0301 [stored|pending|permanent]');
-            if (status !== 'stored' && status !== 'pending' && status !== 'permanent') fail(`dtc expects stored|pending|permanent, got "${status}"`);
+            if (status !== 'stored' && status !== 'pending' && status !== 'permanent')
+                fail(`dtc expects stored|pending|permanent, got "${status}"`);
             const normalized = normalizeDtc(code);
             return each((engine) => engine.injectDtc(normalized, status), `injected ${normalized} (${status})`);
         }
         case 'set': {
-            const [pidHex, raw] = args;
+            const [pidHex = '', raw] = args;
             const pid = Number.parseInt(pidHex ?? '', 16);
-            if (!/^[0-9A-Fa-f]{2}$/.test(pidHex ?? '') || Number.isNaN(pid)) fail(`set expects a two-digit hex PID, got "${pidHex ?? ''}"`);
+            if (!/^[0-9A-Fa-f]{2}$/.test(pidHex ?? '') || Number.isNaN(pid))
+                fail(`set expects a two-digit hex PID, got "${pidHex ?? ''}"`);
             const value = raw === 'null' ? null : Number(raw);
-            if (raw === undefined || (value !== null && !Number.isFinite(value))) fail(`set expects a number or null, got "${raw ?? ''}"`);
+            if (raw === undefined || (value !== null && !Number.isFinite(value)))
+                fail(`set expects a number or null, got "${raw ?? ''}"`);
             const label = pidHex.toUpperCase();
             return each((engine) => engine.override(pid, value), `PID ${label} = ${value === null ? 'NO DATA' : value}`);
         }
@@ -59,15 +62,17 @@ function apply(line: string, engines: readonly SimulatorEngine[]): string {
             return each((engine) => engine.setIgnition(state), `ignition ${state}`);
         }
         case 'fail': {
-            const count = args.length > 1 && /^\d+$/.test(args[args.length - 1]) ? Number.parseInt(args[args.length - 1], 10) : 1;
-            const text = (count === 1 && !/^\d+$/.test(args[args.length - 1] ?? '') ? args : args.slice(0, -1)).join(' ').toUpperCase();
+            const last = args[args.length - 1] ?? '';
+            const hasCount = args.length > 1 && /^\d+$/.test(last);
+            const count = hasCount ? Number.parseInt(last, 10) : 1;
+            const text = (hasCount ? args.slice(0, -1) : args).join(' ').toUpperCase();
             if (!isFault(text)) fail(`fail expects one of ${ADAPTER_FAULTS.join(' | ')}, got "${text}"`);
             return each((engine) => engine.failNext(text, count), `next ${count} request(s) → ${text}`);
         }
         case 'adapter': {
-            const [preset] = args;
-            if (!preset || !(preset in ADAPTER_PRESETS)) fail(`adapter expects ${Object.keys(ADAPTER_PRESETS).join('|')}, got "${preset ?? ''}"`);
+            const [preset = ''] = args;
             const persona = ADAPTER_PRESETS[preset];
+            if (!persona) return fail(`adapter expects ${Object.keys(ADAPTER_PRESETS).join('|')}, got "${preset}"`);
             return each((engine) => engine.setAdapter(persona), `adapter ${persona.name}`);
         }
         case 'clear': {

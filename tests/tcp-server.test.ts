@@ -5,10 +5,15 @@ import {createTcpServer} from '../src/node/index';
 
 const listen = (options: Parameters<typeof createTcpServer>[0]) =>
     new Promise<{server: ReturnType<typeof createTcpServer>; port: number}>((resolve) => {
-        const server = createTcpServer({...options, port: 0, host: '127.0.0.1', onListening: () => {
-            const address = server.address();
-            resolve({server, port: typeof address === 'object' && address ? address.port : 0});
-        }});
+        const server = createTcpServer({
+            ...options,
+            port: 0,
+            host: '127.0.0.1',
+            onListening: () => {
+                const address = server.address();
+                resolve({server, port: typeof address === 'object' && address ? address.port : 0});
+            },
+        });
     });
 
 describe('TCP server', () => {

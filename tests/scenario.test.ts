@@ -207,7 +207,12 @@ describe('MemoryLink fault injection', () => {
         });
 
     it('drops the prompt, truncates or garbles the next responses on request', async () => {
-        const link = new MemoryLink(new SimulatorEngine({now: () => 0}), {connectDelayMs: 1, responseDelayMs: 1, jitterMs: 0, includeWaitWindow: false});
+        const link = new MemoryLink(new SimulatorEngine({now: () => 0}), {
+            connectDelayMs: 1,
+            responseDelayMs: 1,
+            jitterMs: 0,
+            includeWaitWindow: false,
+        });
         await link.connect();
         await link.write('ATE0');
         link.corruptNext('drop-prompt');

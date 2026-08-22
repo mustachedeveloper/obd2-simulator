@@ -40,7 +40,8 @@ const PROTOCOL_NAMES: Readonly<Record<string, string>> = {
 
 // Accepted and acknowledged without any simulated effect (memory, CAN
 // formatting/flow-control, ...).
-const ACKNOWLEDGED_ONLY = /^AT(M[01]|R[01]|V[01]|AL|NL|CAF[01]|CFC[01]|FCSH[0-9A-F]{3,8}|FCSD([0-9A-F]{2}){1,5}|FCSM[0-2]|TP[0-9A-C])$/;
+const ACKNOWLEDGED_ONLY =
+    /^AT(M[01]|R[01]|V[01]|AL|NL|CAF[01]|CFC[01]|FCSH[0-9A-F]{3,8}|FCSD([0-9A-F]{2}){1,5}|FCSM[0-2]|TP[0-9A-C])$/;
 
 export function resetLinkState(persona: AdapterPersona): LinkState {
     return {
@@ -65,7 +66,7 @@ const say = (text: string, state: LinkState): AtOutcome => ({lines: [text], stat
 // junk ('OK') in front of the version string instead.
 export function bannerLines(persona: AdapterPersona): string[] {
     const banner = `${persona.bannerPrefix ?? ''}${persona.banner}`;
-    return persona.bannerBlankLine ?? true ? ['', banner] : [banner];
+    return (persona.bannerBlankLine ?? true) ? ['', banner] : [banner];
 }
 
 function describeProtocol(state: LinkState, vehicleProtocol: CanProtocol): string {
@@ -127,17 +128,18 @@ function handleParameterized(command: string, context: AtContext): AtOutcome {
     const {persona, state} = context;
     const timeout = /^ATST([0-9A-F]{2})$/.exec(command);
     if (timeout) {
-        const hex = timeout[1] === '00' ? (persona.defaultTimeoutHex ?? ELM_DEFAULT_TIMEOUT_HEX) : timeout[1];
+        const digits = timeout[1] ?? '00';
+        const hex = digits === '00' ? (persona.defaultTimeoutHex ?? ELM_DEFAULT_TIMEOUT_HEX) : digits;
         return ok({...state, timeoutHex: hex});
     }
     const adaptive = /^ATAT([012])$/.exec(command);
-    if (adaptive) return ok({...state, adaptiveTiming: Number.parseInt(adaptive[1], 10) as AdaptiveTimingMode});
+    if (adaptive) return ok({...state, adaptiveTiming: Number.parseInt(adaptive[1] ?? '1', 10) as AdaptiveTimingMode});
     const protocol = /^ATSP([0-9A-C])$/.exec(command);
-    if (protocol) return ok({...state, protocol: protocol[1], searched: false});
+    if (protocol) return ok({...state, protocol: protocol[1] ?? AUTO_PROTOCOL, searched: false});
     const header = /^ATSH([0-9A-F]{3}|[0-9A-F]{6}|[0-9A-F]{8})$/.exec(command);
-    if (header) return ok({...state, requestHeader: header[1]});
+    if (header) return ok({...state, requestHeader: header[1] ?? state.requestHeader});
     const filter = /^ATCRA([0-9A-F]{3}|[0-9A-F]{8})$/.exec(command);
-    if (filter) return ok({...state, receiveFilter: filter[1]});
+    if (filter) return ok({...state, receiveFilter: filter[1] ?? null});
     if (ACKNOWLEDGED_ONLY.test(command)) return ok(state);
     return unknown(state);
 }

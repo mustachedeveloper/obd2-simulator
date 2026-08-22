@@ -42,7 +42,21 @@ describe('AT command recognition', () => {
 
     it('still acknowledges the whole init sequence', () => {
         const engine = engineWith();
-        for (const command of ['ATL0', 'ATS0', 'ATH0', 'ATST19', 'ATSP0', 'ATSP6', 'ATAT1', 'ATSH7DF', 'ATCRA', 'ATD', 'ATL1', 'ATS1', 'ATE1']) {
+        for (const command of [
+            'ATL0',
+            'ATS0',
+            'ATH0',
+            'ATST19',
+            'ATSP0',
+            'ATSP6',
+            'ATAT1',
+            'ATSH7DF',
+            'ATCRA',
+            'ATD',
+            'ATL1',
+            'ATS1',
+            'ATE1',
+        ]) {
             expect(engine.handleCommand(command), command).toContain('OK');
         }
     });
@@ -105,7 +119,14 @@ describe('AT command recognition', () => {
             requestHeader: '7E0',
         });
         engine.handleCommand('ATZ');
-        expect(engine.linkState).toMatchObject({echo: true, headers: false, timeoutHex: '32', adaptiveTiming: 1, receiveFilter: null, searched: false});
+        expect(engine.linkState).toMatchObject({
+            echo: true,
+            headers: false,
+            timeoutHex: '32',
+            adaptiveTiming: 1,
+            receiveFilter: null,
+            searched: false,
+        });
     });
 });
 
@@ -151,7 +172,7 @@ describe('multi-ECU responses', () => {
         clone.handleCommand('ATSH7E1');
         const only = lines(clone.handleCommand('010C'));
         expect(only).toHaveLength(1);
-        expect(only[0].startsWith('7E9')).toBe(true);
+        expect(only[0]?.startsWith('7E9')).toBe(true);
         clone.handleCommand('ATSH7DF');
         expect(lines(clone.handleCommand('010C'))).toHaveLength(2);
         // A response id (or any non-request header) addresses nobody.

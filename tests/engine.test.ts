@@ -233,7 +233,10 @@ describe('mode 09 vehicle info', () => {
             .map((line) => line.slice(line.indexOf(':') + 1))
             .join('')
             .slice(6);
-        const vin = hex.match(/.{2}/g)?.map((pair) => String.fromCharCode(Number.parseInt(pair, 16))).join('');
+        const vin = hex
+            .match(/.{2}/g)
+            ?.map((pair) => String.fromCharCode(Number.parseInt(pair, 16)))
+            .join('');
         expect(vin).toBe(GASOLINE_PROFILE.vin);
     });
 

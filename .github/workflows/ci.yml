@@ -10,25 +10,51 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  check:
+    name: lint · typecheck · test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node }}
           cache: npm
-          registry-url: https://registry.npmjs.org
       - run: npm ci
+      - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
       - run: npm run build
+      # Coverage thresholds live in vitest.config.ts; the bundle test needs dist/.
+      - run: npm run test:coverage
+
+  # The runtime floor is Node 18 (engines), but vitest 4 needs 20+: smoke-test
+  # the built package on 18 instead of running the suite there.
+  node18:
+    name: runtime smoke (Node 18)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npx tsup
+      - run: node -e "const {SimulatorEngine} = require('./dist/index.cjs'); const e = new SimulatorEngine(); e.handleCommand('ATE0'); const r = e.handleCommand('010C'); if (!/^410C/.test(r)) throw new Error(r); console.log('cjs ok', r)"
+      - run: node --input-type=module -e "import {SimulatorEngine} from './dist/index.js'; import {createTcpServer} from './dist/node/index.js'; const s = createTcpServer({port: 0, host: '127.0.0.1', engineFactory: () => new SimulatorEngine(), onError: (e) => { console.error(e); process.exit(1); }}); s.on('listening', () => { console.log('esm + tcp ok'); s.close(); }); setTimeout(() => { console.error('no listening event'); process.exit(1); }, 5000).unref()"
 
   publish:
-    # Publishes on version tags (v0.1.0 ...) with npm provenance.
+    # Publishes on version tags (v0.1.0 ...) with npm provenance. The tag must
+    # match package.json so a stray tag cannot publish the wrong version.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: test
+    needs: [check, node18]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write
@@ -36,8 +62,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+          cache: npm
           registry-url: https://registry.npmjs.org
+      - name: Check tag matches package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$VERSION" ]; then echo "tag v$TAG != package.json $VERSION" >&2; exit 1; fi
       - run: npm ci
       - run: npm publish --provenance --access public
         env:

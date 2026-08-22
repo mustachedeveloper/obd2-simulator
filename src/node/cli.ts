@@ -4,7 +4,7 @@ import {GASOLINE_PROFILE} from '../profiles/gasoline';
 import {DIESEL_PROFILE, dieselDrivingModel} from '../profiles/diesel';
 import {REFERENCE_PROFILE} from '../profiles/reference';
 import type {VehicleProfile} from '../core/types';
-import {ADAPTER_PRESETS} from '../adapters/presets';
+import {ADAPTER_PRESETS, DEFAULT_ADAPTER} from '../adapters/presets';
 import {createTcpServer} from './tcp-server';
 import {createControlServer} from './control-server';
 import {CONTROL_HELP, applyControlCommand} from './control';
@@ -25,9 +25,13 @@ if (parsed.kind === 'error') {
 }
 
 const {options} = parsed;
-const PROFILES: Record<typeof options.profile, VehicleProfile> = {gasoline: GASOLINE_PROFILE, diesel: DIESEL_PROFILE, reference: REFERENCE_PROFILE};
+const PROFILES: Record<typeof options.profile, VehicleProfile> = {
+    gasoline: GASOLINE_PROFILE,
+    diesel: DIESEL_PROFILE,
+    reference: REFERENCE_PROFILE,
+};
 const profile = PROFILES[options.profile];
-const adapter = ADAPTER_PRESETS[options.adapter];
+const adapter = ADAPTER_PRESETS[options.adapter] ?? DEFAULT_ADAPTER;
 
 const live = new Set<SimulatorEngine>();
 // Successful control commands, replayed on every engine created later so a
@@ -61,7 +65,12 @@ const server = createTcpServer({
     onClientError: (remote, error) => console.error(`client ${remote}: ${error.message}`),
     onError: (error) => {
         const code = (error as NodeJS.ErrnoException).code;
-        const hint = code === 'EADDRINUSE' ? ` — port ${options.port} is taken, try --port <n>` : code === 'EACCES' ? ' — no permission for that port' : '';
+        const hint =
+            code === 'EADDRINUSE'
+                ? ` — port ${options.port} is taken, try --port <n>`
+                : code === 'EACCES'
+                  ? ' — no permission for that port'
+                  : '';
         console.error(`obd2-simulator: ${error.message}${hint}`);
         process.exit(1);
     },

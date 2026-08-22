@@ -9,29 +9,43 @@ import {SimulatorEngine} from '../core/SimulatorEngine';
 
 export interface TcpServerOptions {
     port?: number;
-    // Bind address. The default exposes the fake adapter on every interface,
-    // which is the point of impersonating a WiFi dongle — pass '127.0.0.1'
-    // to keep it local.
+    /**
+     * Bind address. The default exposes the fake adapter on every interface,
+     * which is the point of impersonating a WiFi dongle — pass '127.0.0.1'
+     * to keep it local.
+     */
     host?: string;
-    // Called per connection; return the engine that backs this client.
+    /**
+     * Called per connection; return the engine that backs this client.
+     */
     engineFactory?: () => SimulatorEngine;
-    // Multiplies every simulated latency (0 → answer immediately).
+    /**
+     * Multiplies every simulated latency (0 → answer immediately).
+     */
     latencyScale?: number;
-    // Longest command line accepted before the input buffer is discarded and
-    // '?' printed — a client that never sends a carriage return cannot grow
-    // memory without bound.
+    /**
+     * Longest command line accepted before the input buffer is discarded and
+     * '?' printed — a client that never sends a carriage return cannot grow
+     * memory without bound.
+     */
     maxLineLength?: number;
     onListening?: (port: number) => void;
     onConnection?: (remote: string) => void;
-    // Server-level failures (EADDRINUSE, EACCES, ...). Without a handler
-    // Node's default applies: the 'error' event throws.
+    /**
+     * Server-level failures (EADDRINUSE, EACCES, ...). Without a handler
+     * Node's default applies: the 'error' event throws.
+     */
     onError?: (error: Error) => void;
-    // Per-client socket errors (ECONNRESET, ...); the socket is destroyed
-    // either way.
+    /**
+     * Per-client socket errors (ECONNRESET, ...); the socket is destroyed
+     * either way.
+     */
     onClientError?: (remote: string, error: Error) => void;
-    // Called with each client's engine; the returned function runs when
-    // that client disconnects (e.g. to keep a registry for a control server).
-    onEngine?: (engine: SimulatorEngine, remote: string) => (() => void) | void;
+    /**
+     * Called with each client's engine; the returned function runs when
+     * that client disconnects (e.g. to keep a registry for a control server).
+     */
+    onEngine?: (engine: SimulatorEngine, remote: string) => (() => void) | undefined;
 }
 
 const DEFAULT_PORT = 35000;
@@ -43,7 +57,11 @@ const remoteOf = (socket: Socket): string => `${socket.remoteAddress ?? '?'}:${s
 
 // One client: splits the byte stream into command lines and answers them
 // through a serial timer chain, like a single-threaded adapter.
-function serveClient(socket: Socket, engine: SimulatorEngine, options: Required<Pick<TcpServerOptions, 'latencyScale' | 'maxLineLength'>>): void {
+function serveClient(
+    socket: Socket,
+    engine: SimulatorEngine,
+    options: Required<Pick<TcpServerOptions, 'latencyScale' | 'maxLineLength'>>,
+): void {
     let buffer = '';
     let tail: Promise<void> = Promise.resolve();
     const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -93,13 +111,17 @@ const MAX_PORT = 65535;
 // Options are caller-controlled, but a wrong value here fails in confusing
 // ways (every command answered '?', or a RangeError from deep inside
 // net.Server.listen), so they are checked up front.
-function validateOptions(options: TcpServerOptions): Required<Pick<TcpServerOptions, 'port' | 'host' | 'latencyScale' | 'maxLineLength'>> {
+function validateOptions(
+    options: TcpServerOptions,
+): Required<Pick<TcpServerOptions, 'port' | 'host' | 'latencyScale' | 'maxLineLength'>> {
     const port = options.port ?? DEFAULT_PORT;
     const latencyScale = options.latencyScale ?? 1;
     const maxLineLength = options.maxLineLength ?? DEFAULT_MAX_LINE_LENGTH;
-    if (!Number.isInteger(port) || port < 0 || port > MAX_PORT) throw new Error(`port must be an integer in 0-${MAX_PORT}, got ${port}`);
+    if (!Number.isInteger(port) || port < 0 || port > MAX_PORT)
+        throw new Error(`port must be an integer in 0-${MAX_PORT}, got ${port}`);
     if (!Number.isFinite(latencyScale) || latencyScale < 0) throw new Error(`latencyScale must be >= 0, got ${latencyScale}`);
-    if (!Number.isInteger(maxLineLength) || maxLineLength < 1) throw new Error(`maxLineLength must be a positive integer, got ${maxLineLength}`);
+    if (!Number.isInteger(maxLineLength) || maxLineLength < 1)
+        throw new Error(`maxLineLength must be a positive integer, got ${maxLineLength}`);
     return {port, host: options.host ?? DEFAULT_HOST, latencyScale, maxLineLength};
 }
 

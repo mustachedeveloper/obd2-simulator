@@ -25,7 +25,12 @@ describe('personaFromWireLog', () => {
 
     it('spots a hint-ignoring clone with a banner prefix', () => {
         const persona = personaFromWireLog(fixture('clone-v2.1'), {name: 'recorded-clone', base: GENUINE_ELM_ADAPTER});
-        expect(persona).toMatchObject({banner: 'ELM327 v2.1', bannerPrefix: 'OK', honorsResponseHint: false, protocolSearchMs: null});
+        expect(persona).toMatchObject({
+            banner: 'ELM327 v2.1',
+            bannerPrefix: 'OK',
+            honorsResponseHint: false,
+            protocolSearchMs: null,
+        });
         expect(persona.adaptiveTiming).toBe(GENUINE_ELM_ADAPTER.adaptiveTiming); // untouched base fields
     });
 

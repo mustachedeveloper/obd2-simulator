@@ -54,7 +54,9 @@ const fail = (message: string): never => {
 
 const integer = (flag: string, value: string | undefined): number => {
     const parsed = Number.parseInt(value ?? '', 10);
-    return Number.isFinite(parsed) && String(parsed) === value ? parsed : fail(`${flag} expects an integer, got "${value ?? ''}"`);
+    return Number.isFinite(parsed) && String(parsed) === value
+        ? parsed
+        : fail(`${flag} expects an integer, got "${value ?? ''}"`);
 };
 
 const MAX_PORT = 65535;

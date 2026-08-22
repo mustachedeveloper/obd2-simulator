@@ -39,7 +39,9 @@ export function isoTpLines(payload: readonly number[], spaces = false): string[]
     let offset = 0;
     for (let segment = 0; offset < payload.length; segment++) {
         const take = segment === 0 ? FIRST_FRAME_DATA : CONSECUTIVE_FRAME_DATA;
-        lines.push(`${(segment % 16).toString(16).toUpperCase()}:${spaces ? ' ' : ''}${hex(payload.slice(offset, offset + take), spaces)}`);
+        lines.push(
+            `${(segment % 16).toString(16).toUpperCase()}:${spaces ? ' ' : ''}${hex(payload.slice(offset, offset + take), spaces)}`,
+        );
         offset += take;
     }
     return lines;
@@ -66,7 +68,10 @@ export function formatLines(responses: readonly EcuResponse[], options: FramingO
     const depth = Math.max(...perEcu.map((lines) => lines.length));
     const interleaved: string[] = [];
     for (let index = 0; index < depth; index++) {
-        for (const lines of perEcu) if (index < lines.length) interleaved.push(lines[index]);
+        for (const lines of perEcu) {
+            const line = lines[index];
+            if (line !== undefined) interleaved.push(line);
+        }
     }
     return interleaved;
 }

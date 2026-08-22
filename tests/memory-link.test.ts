@@ -1,4 +1,4 @@
-import {describe, expect, it} from 'vitest';
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {MemoryLink, SimulatorEngine, VLINKER_ADAPTER} from '../src/index';
 
 const collectUntilPrompt = (link: MemoryLink): Promise<string> =>
@@ -39,39 +39,49 @@ describe('MemoryLink', () => {
 });
 
 describe('MemoryLink timing and history', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
     it('answers serially in command order even when latencies differ', async () => {
         const engine = new SimulatorEngine({now: () => 0});
         const link = new MemoryLink(engine, {connectDelayMs: 1, responseDelayMs: 1, jitterMs: 0});
-        await link.connect();
+        const connecting = link.connect();
+        await vi.advanceTimersByTimeAsync(1);
+        await connecting;
         const received: string[] = [];
         link.onData((chunk) => received.push(chunk));
         await link.write('ATE0');
         await link.write('010C'); // no hint → +200 ms window
         await link.write('ATRV'); // 1 ms
-        await new Promise((resolve) => setTimeout(resolve, 260));
+        await vi.advanceTimersByTimeAsync(260);
         const joined = received.join('');
         expect(joined.indexOf('410C')).toBeLessThan(joined.indexOf('V\r\r>'));
         expect(link.history.map((entry) => entry.command)).toEqual(['ATE0', '010C', 'ATRV']);
-        expect(link.history[1].latencyMs).toBe(201);
-        expect(link.history[2].response).toMatch(/V$/);
+        expect(link.history[1]?.latencyMs).toBe(201);
+        expect(link.history[2]?.response).toMatch(/V$/);
         await link.disconnect();
     });
 
     it('silences everything still queued when disconnected mid-flight', async () => {
         const link = new MemoryLink(new SimulatorEngine({now: () => 0}), {connectDelayMs: 1, responseDelayMs: 20, jitterMs: 0});
-        await link.connect();
+        const connecting = link.connect();
+        await vi.advanceTimersByTimeAsync(1);
+        await connecting;
         const received: string[] = [];
         link.onData((chunk) => received.push(chunk));
         await link.write('ATE0');
         await link.write('ATI');
         await link.write('ATI');
         await link.disconnect();
-        await new Promise((resolve) => setTimeout(resolve, 120));
+        await vi.advanceTimersByTimeAsync(120);
         expect(received).toEqual([]);
         // A fresh session answers normally.
-        await link.connect();
+        const reconnecting = link.connect();
+        await vi.advanceTimersByTimeAsync(1);
+        await reconnecting;
         const pending = collectUntilPrompt(link);
         await link.write('ATRV');
+        await vi.advanceTimersByTimeAsync(25);
         expect(await pending).toMatch(/V\r\r>$/);
         await link.disconnect();
     });
@@ -82,20 +92,27 @@ describe('MemoryLink timing and history', () => {
             responseDelayMs: 3,
             includeWaitWindow: false,
         });
-        await link.connect();
+        const connecting = link.connect();
+        await vi.advanceTimersByTimeAsync(1);
+        await connecting;
         await link.write('ATE0');
         await link.write('010C');
-        expect(link.history[1].latencyMs).toBe(3);
+        expect(link.history[1]?.latencyMs).toBe(3);
         await link.disconnect();
     });
 
     it('uses the persona latency when no override is given', async () => {
         const link = new MemoryLink(new SimulatorEngine({now: () => 0, adapter: VLINKER_ADAPTER}), {connectDelayMs: 1});
-        await link.connect();
+        const connecting = link.connect();
+        await vi.advanceTimersByTimeAsync(1);
+        await connecting;
         const pending = collectUntilPrompt(link);
         await link.write('ATZ');
+        await vi.advanceTimersByTimeAsync(100);
         await pending;
-        expect(link.history[0].latencyMs).toBeGreaterThanOrEqual(VLINKER_ADAPTER.baseLatencyMs - VLINKER_ADAPTER.latencyJitterMs);
+        expect(link.history[0]?.latencyMs).toBeGreaterThanOrEqual(
+            VLINKER_ADAPTER.baseLatencyMs - VLINKER_ADAPTER.latencyJitterMs,
+        );
         link.clearHistory();
         expect(link.history).toHaveLength(0);
         await link.disconnect();

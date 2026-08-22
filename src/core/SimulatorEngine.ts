@@ -22,6 +22,7 @@ import {AUTO_PROTOCOL, bannerLines, handleAtCommand, handleStCommand, resetLinkS
 import {formatLines, hexToBytes, type EcuResponse} from './framing';
 import {ADDITIONAL_ECU_ID, ENGINE_ECU_ID, addressedEcus, isExtended} from './ecus';
 import {mode09Responses, type VehicleInfoSource} from './mode09';
+import {checkQueueCount, isPid, parseSnapshot} from './snapshot';
 import {waitMsFor, type CommandKind} from './timing';
 
 // Wire-level fake vehicle + ELM327 adapter in one object: feed it the exact
@@ -41,12 +42,16 @@ export interface SimulatorEngineOptions {
     profile?: VehicleProfile;
     model?: DrivingModel;
     adapter?: AdapterPersona;
-    // Injectable clock for deterministic tests; defaults to Date.now.
+    /**
+     * Injectable clock for deterministic tests; defaults to Date.now.
+     */
     now?: () => number;
     seed?: number;
     logger?: SimulatorLogger;
-    // Replaces the persona's base + jitter latency (e.g. a distribution
-    // derived from a recorded wire log). The ATST wait is still added.
+    /**
+     * Replaces the persona's base + jitter latency (e.g. a distribution
+     * derived from a recorded wire log). The ATST wait is still added.
+     */
     latencyFor?: (command: string) => number;
 }
 
@@ -62,62 +67,18 @@ const MAX_DTC_COUNT = 0x7f;
 const ZERO_READINESS: ReadinessBytes = [0, 0, 0];
 // Key on, engine off: the moving parts read zero, the battery carries the bus.
 const KEY_ON_VALUES: Readonly<Record<number, number>> = {
-    0x04: 0, 0x0c: 0, 0x0d: 0, 0x10: 0, 0x1f: 0, 0x42: 12.4, 0x43: 0, 0x5e: 0, 0x61: 0, 0x62: 0,
+    0x04: 0,
+    0x0c: 0,
+    0x0d: 0,
+    0x10: 0,
+    0x1f: 0,
+    0x42: 12.4,
+    0x43: 0,
+    0x5e: 0,
+    0x61: 0,
+    0x62: 0,
 };
 const VOLTAGE = {off: 12.2, keyOn: 12.4, running: 14.1, cranked: 400};
-const MAX_QUEUED_FAULTS = 1000;
-const IGNITION_STATES: readonly IgnitionState[] = ['off', 'key-on', 'running'];
-const ADAPTER_FAULT_SET: ReadonlySet<string> = new Set(['BUFFER FULL', 'CAN ERROR', 'BUS ERROR', 'DATA ERROR', 'STOPPED', 'UNABLE TO CONNECT', 'NO DATA']);
-
-// Queue sizes for fault injection: a typo must not allocate gigabytes.
-export function checkQueueCount(count: number): number {
-    if (!Number.isInteger(count) || count < 0 || count > MAX_QUEUED_FAULTS) {
-        throw new Error(`count must be an integer in 0-${MAX_QUEUED_FAULTS}, got ${count}`);
-    }
-    return count;
-}
-
-const isPid = (pid: number): boolean => Number.isInteger(pid) && pid >= 0 && pid <= 0xff;
-
-// Snapshots may come from disk or the network: everything is checked
-// before any field of the engine changes, so a bad snapshot leaves it intact.
-function parseSnapshot(snapshot: EngineSnapshot): EngineSnapshot {
-    if (!snapshot || typeof snapshot !== 'object') throw new Error('snapshot must be an object');
-    const {link, overrides, freezeFrame} = snapshot;
-    if (!link || typeof link !== 'object' || typeof link.echo !== 'boolean' || typeof link.protocol !== 'string') {
-        throw new Error('snapshot.link must be a LinkState');
-    }
-    if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) throw new Error('snapshot.overrides must be an object');
-    const parsedOverrides = Object.fromEntries(
-        Object.entries(overrides).map(([pid, value]) => {
-            const key = Number(pid);
-            if (!isPid(key) || (value !== null && !Number.isFinite(value))) throw new Error(`snapshot.overrides: bad entry ${pid} = ${value}`);
-            return [key, value];
-        }),
-    );
-    if (!(IGNITION_STATES as readonly string[]).includes(snapshot.ignition)) throw new Error(`snapshot.ignition: unknown state "${snapshot.ignition}"`);
-    if (!Array.isArray(snapshot.pendingFaults) || snapshot.pendingFaults.some((fault) => !ADAPTER_FAULT_SET.has(fault))) {
-        throw new Error('snapshot.pendingFaults: unknown fault');
-    }
-    if (freezeFrame !== null && (!Array.isArray(freezeFrame) || freezeFrame.some(([pid, data]) => !isPid(pid) || !Array.isArray(data)))) {
-        throw new Error('snapshot.freezeFrame must be null or [pid, bytes][]');
-    }
-    const codes = (list: readonly string[], name: string) => {
-        if (!Array.isArray(list)) throw new Error(`snapshot.${name} must be an array`);
-        return list.map(normalizeDtc);
-    };
-    return {
-        link: {...link},
-        storedDtcs: codes(snapshot.storedDtcs, 'storedDtcs'),
-        pendingDtcs: codes(snapshot.pendingDtcs, 'pendingDtcs'),
-        permanentDtcs: codes(snapshot.permanentDtcs, 'permanentDtcs'),
-        freezeFrame: freezeFrame ? freezeFrame.map(([pid, data]) => [pid, [...data]] as const) : null,
-        overrides: parsedOverrides,
-        ignition: snapshot.ignition,
-        pendingFaults: [...snapshot.pendingFaults],
-    };
-}
-
 // One ECU as the engine serves it. The engine ECU carries the DTC lists and
 // the whole profile; the others answer their declared subset.
 interface Ecu {
@@ -135,9 +96,13 @@ interface Outcome {
     kind: CommandKind;
     hint: number | null;
     responders: number;
-    // A protocol search ran for this command (SEARCHING... printed).
+    /**
+     * A protocol search ran for this command (SEARCHING... printed).
+     */
     searched: boolean;
-    // Link settings after the command; respond() applies it.
+    /**
+     * Link settings after the command; respond() applies it.
+     */
     state: LinkState;
 }
 
@@ -182,7 +147,10 @@ export class SimulatorEngine {
         this.latencyFor = options.latencyFor ?? null;
         this.persona = options.adapter ?? DEFAULT_ADAPTER;
         this.link = resetLinkState(this.persona);
-        this.ecus = [this.engineEcu(), ...(this.profile.additionalEcus ?? []).map((ecu) => this.additionalEcu(validateEcuProfile(ecu)))];
+        this.ecus = [
+            this.engineEcu(),
+            ...(this.profile.additionalEcus ?? []).map((ecu) => this.additionalEcu(validateEcuProfile(ecu))),
+        ];
         this.monitorMids = new Set(this.profile.monitorTests.map((t) => t.mid));
         this.stored = (this.profile.storedDtcs ?? []).map(normalizeDtc);
         this.pending = (this.profile.pendingDtcs ?? []).map(normalizeDtc);
@@ -196,7 +164,9 @@ export class SimulatorEngine {
         return {
             id: ENGINE_ECU_ID,
             isEngine: true,
-            // Status/readiness PIDs are always served in addition to the signal set.
+            /**
+             * Status/readiness PIDs are always served in addition to the signal set.
+             */
             pids: new Set([0x01, 0x41, ...profile.pids]),
             readinessSinceClear: profile.readinessSinceClear,
             readinessThisDriveCycle: profile.readinessThisDriveCycle,
@@ -217,8 +187,10 @@ export class SimulatorEngine {
         return {
             id: ecu.id,
             isEngine: false,
-            // Status PIDs come with mode 01; an ECU without any signal PID
-            // (a module that only rejects DTC requests) stays silent on 01.
+            /**
+             * Status PIDs come with mode 01; an ECU without any signal PID
+             * (a module that only rejects DTC requests) stays silent on 01.
+             */
             pids: new Set(ecu.pids.length > 0 ? [0x01, 0x41, ...ecu.pids] : []),
             readinessSinceClear: readiness,
             readinessThisDriveCycle: readiness,
@@ -231,20 +203,26 @@ export class SimulatorEngine {
         return this.persona;
     }
 
-    // Snapshot of the AT-level settings (echo, headers, spaces, ATST, ...).
+    /**
+     * Snapshot of the AT-level settings (echo, headers, spaces, ATST, ...).
+     */
     get linkState(): Readonly<LinkState> {
         return this.link;
     }
 
-    // Swaps the adapter persona without resetting link settings — the
-    // "same clone, different day" scenario. ATZ applies the new defaults.
+    /**
+     * Swaps the adapter persona without resetting link settings — the
+     * "same clone, different day" scenario. ATZ applies the new defaults.
+     */
     setAdapter(persona: AdapterPersona): void {
         this.persona = persona;
         this.logger.info?.(`adapter persona → ${persona.name}`);
     }
 
-    // Plants a fault code at runtime; stored codes also snapshot the freeze
-    // frame the first time one appears. Throws on malformed codes.
+    /**
+     * Plants a fault code at runtime; stored codes also snapshot the freeze
+     * frame the first time one appears. Throws on malformed codes.
+     */
     injectDtc(rawCode: string, status: DtcStatus = 'stored'): void {
         const code = normalizeDtc(rawCode);
         const list = status === 'pending' ? this.pending : status === 'permanent' ? this.permanent : this.stored;
@@ -270,7 +248,9 @@ export class SimulatorEngine {
         return this.permanent;
     }
 
-    // Drops a code from whichever list holds it. Throws on malformed codes.
+    /**
+     * Drops a code from whichever list holds it. Throws on malformed codes.
+     */
     removeDtc(rawCode: string): void {
         const code = normalizeDtc(rawCode);
         this.stored = this.stored.filter((c) => c !== code);
@@ -279,7 +259,9 @@ export class SimulatorEngine {
         if (this.stored.length === 0) this.freezeFrame = null;
     }
 
-    // Test-side reset of every list (unlike mode 04, permanent codes go too).
+    /**
+     * Test-side reset of every list (unlike mode 04, permanent codes go too).
+     */
     clearDtcs(): void {
         this.stored = [];
         this.pending = [];
@@ -287,11 +269,14 @@ export class SimulatorEngine {
         this.freezeFrame = null;
     }
 
-    // Pins a mode 01 PID to a physical value (null → NO DATA) regardless of
-    // the driving model; freeze frames capture the pinned value too.
+    /**
+     * Pins a mode 01 PID to a physical value (null → NO DATA) regardless of
+     * the driving model; freeze frames capture the pinned value too.
+     */
     override(pid: number, value: number | null): void {
         if (!isPid(pid)) throw new Error(`override: PID must be an integer in 0-255, got ${pid}`);
-        if (value !== null && !Number.isFinite(value)) throw new Error(`override: value must be a finite number or null, got ${value}`);
+        if (value !== null && !Number.isFinite(value))
+            throw new Error(`override: value must be a finite number or null, got ${value}`);
         this.overridesMap = new Map([...this.overridesMap, [pid, value]]);
     }
 
@@ -307,8 +292,10 @@ export class SimulatorEngine {
         return Object.fromEntries(this.overridesMap);
     }
 
-    // Key off puts every ECU to sleep (NO DATA / UNABLE TO CONNECT); key on
-    // answers with a stopped engine; running is the driving cycle.
+    /**
+     * Key off puts every ECU to sleep (NO DATA / UNABLE TO CONNECT); key on
+     * answers with a stopped engine; running is the driving cycle.
+     */
     setIgnition(state: IgnitionState): void {
         this.ignitionState = state;
         this.logger.info?.(`ignition → ${state}`);
@@ -318,8 +305,10 @@ export class SimulatorEngine {
         return this.ignitionState;
     }
 
-    // Makes the adapter print an error instead of the next `count` OBD
-    // responses (AT commands are unaffected). Faults queue in order.
+    /**
+     * Makes the adapter print an error instead of the next `count` OBD
+     * responses (AT commands are unaffected). Faults queue in order.
+     */
     failNext(fault: AdapterFault, count = 1): void {
         this.faults = [...this.faults, ...new Array<AdapterFault>(checkQueueCount(count)).fill(fault)];
     }
@@ -332,14 +321,18 @@ export class SimulatorEngine {
         return this.faults;
     }
 
-    // Power-cycles the adapter: settings back to persona defaults, and the
-    // banner the adapter prints unprompted on the wire.
+    /**
+     * Power-cycles the adapter: settings back to persona defaults, and the
+     * banner the adapter prints unprompted on the wire.
+     */
     resetAdapter(): string {
         this.link = resetLinkState(this.persona);
         return this.wireFor(bannerLines(this.persona).join(this.eol()));
     }
 
-    // Called after every command with its result; returns the unsubscribe.
+    /**
+     * Called after every command with its result; returns the unsubscribe.
+     */
     onCommand(listener: (result: CommandResult) => void): () => void {
         this.commandListeners.add(listener);
         return () => this.commandListeners.delete(listener);
@@ -358,7 +351,9 @@ export class SimulatorEngine {
         };
     }
 
-    // Atomic: a malformed snapshot throws before anything changes.
+    /**
+     * Atomic: a malformed snapshot throws before anything changes.
+     */
     restore(snapshot: EngineSnapshot): void {
         const parsed = parseSnapshot(snapshot);
         this.link = parsed.link;
@@ -371,22 +366,28 @@ export class SimulatorEngine {
         this.faults = [...parsed.pendingFaults];
     }
 
-    // Handles one full command and returns the printed lines joined with the
-    // link's line ending (without the blank line + '>' prompt).
+    /**
+     * Handles one full command and returns the printed lines joined with the
+     * link's line ending (without the blank line + '>' prompt).
+     */
     handleCommand(rawCommand: string): string {
         return this.execute(rawCommand).response;
     }
 
-    // Wraps text the way the adapter prints a response: blank line + prompt,
-    // with the current line ending. Transports use it for their own output.
+    /**
+     * Wraps text the way the adapter prints a response: blank line + prompt,
+     * with the current line ending. Transports use it for their own output.
+     */
     wireFor(text: string): string {
         const eol = this.eol();
         return `${text}${eol}${eol}>`;
     }
 
-    // Same as handleCommand, plus the exact wire bytes and the latency model.
-    // When echo is on (before ATE0) the command is echoed as typed, exactly
-    // like real hardware.
+    /**
+     * Same as handleCommand, plus the exact wire bytes and the latency model.
+     * When echo is on (before ATE0) the command is echoed as typed, exactly
+     * like real hardware.
+     */
     execute(rawCommand: string): CommandResult {
         // Real ELM327s ignore whitespace inside commands ('010C 1' ≡ '010C1').
         const command = rawCommand.replace(/\s+/g, '').toUpperCase();
@@ -441,9 +442,9 @@ export class SimulatorEngine {
         const hint = command.length % 2 === 1 ? Number.parseInt(command.slice(-1), 16) : null;
         const request = hint === null ? command : command.slice(0, -1);
         if (!HEX_REQUEST.test(request) || (hint !== null && Number.isNaN(hint))) return {...none, lines: ['?'], kind: 'unknown'};
-        if (this.faults.length > 0) {
-            const [fault, ...rest] = this.faults;
-            this.faults = rest;
+        const [fault, ...remainingFaults] = this.faults;
+        if (fault !== undefined) {
+            this.faults = remainingFaults;
             return {...none, lines: [fault], kind: 'fault', hint};
         }
         return this.respondObdRequest(request, hint);
@@ -490,7 +491,11 @@ export class SimulatorEngine {
     private addressed(responses: readonly EcuResponse[]): EcuResponse[] {
         const ids = addressedEcus(
             this.ecus.map((ecu) => ecu.id),
-            {requestHeader: this.link.requestHeader, receiveFilter: this.link.receiveFilter, extended: isExtended(this.effectiveProtocol())},
+            {
+                requestHeader: this.link.requestHeader,
+                receiveFilter: this.link.receiveFilter,
+                extended: isExtended(this.effectiveProtocol()),
+            },
         );
         return responses.filter((response) => ids.includes(response.ecu));
     }
@@ -526,7 +531,10 @@ export class SimulatorEngine {
             default:
                 return this.ecus
                     .filter((ecu) => ecu.dtcReply !== 'none')
-                    .map((ecu) => ({ecu: ecu.id, payload: [NEGATIVE_RESPONSE, Number.parseInt(service, 16), NRC_SERVICE_NOT_SUPPORTED]}));
+                    .map((ecu) => ({
+                        ecu: ecu.id,
+                        payload: [NEGATIVE_RESPONSE, Number.parseInt(service, 16), NRC_SERVICE_NOT_SUPPORTED],
+                    }));
         }
     }
 
@@ -573,7 +581,11 @@ export class SimulatorEngine {
         if (argument.length !== 4 || argument.slice(2) !== '00') return [];
         const pid = Number.parseInt(argument.slice(0, 2), 16);
         return this.ecus.flatMap((ecu) => {
-            const data = ecu.isEngine ? this.engineFreezeFrameData(pid) : ecu.dtcReply === 'empty' && pid === 0x02 ? [0, 0] : null;
+            const data = ecu.isEngine
+                ? this.engineFreezeFrameData(pid)
+                : ecu.dtcReply === 'empty' && pid === 0x02
+                  ? [0, 0]
+                  : null;
             return data ? [{ecu: ecu.id, payload: [0x42, pid, 0x00, ...data]}] : [];
         });
     }
@@ -585,7 +597,7 @@ export class SimulatorEngine {
             return hexToBytes(maskBytesFor(ids, pid));
         }
         if (pid === 0x02) {
-            const pair = snapshot ? encodeDtc(this.stored[0]) : null;
+            const pair = snapshot ? encodeDtc(this.stored[0] ?? '') : null;
             return pair ? [pair[0], pair[1]] : [0, 0];
         }
         return snapshot?.get(pid) ?? null;
@@ -640,7 +652,8 @@ export class SimulatorEngine {
 
     private captureFreezeFrame(): void {
         if (this.freezeFrame) return;
-        const engine = this.ecus[0];
+        const [engine] = this.ecus;
+        if (!engine) return;
         const snapshot = new Map<number, number[]>();
         for (const pid of this.profile.pids) {
             const data = this.encodeCurrentValue(engine, pid);
@@ -668,7 +681,8 @@ export class SimulatorEngine {
     private modelValue(pid: number): number | null {
         if (this.overridesMap.has(pid)) return this.overridesMap.get(pid) ?? null;
         if (this.ignitionState === 'key-on') {
-            if (pid in KEY_ON_VALUES) return KEY_ON_VALUES[pid];
+            const keyOn = KEY_ON_VALUES[pid];
+            if (keyOn !== undefined) return keyOn;
             return this.model.value(pid, 0, (amplitude) => this.jitter(amplitude));
         }
         const elapsedSeconds = Math.max(0, (this.now() - this.startedAt) / 1000);
@@ -680,5 +694,7 @@ export class SimulatorEngine {
     }
 }
 
-// Re-exported for consumers that build expected output by hand.
+/**
+ * Re-exported for consumers that build expected output by hand.
+ */
 export {toHex};

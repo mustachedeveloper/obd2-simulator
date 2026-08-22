@@ -34,14 +34,17 @@ export function headerText(id11: string, extended: boolean, spaces: boolean): st
 // Which 11-bit ECU id a physical request header addresses; null when the
 // header is functional (everyone) or addresses nobody.
 function physicalTarget(requestHeader: string): {ecu: string | null; functional: boolean} {
-    if (requestHeader === FUNCTIONAL_REQUEST_HEADER || requestHeader === FUNCTIONAL_HEADER_29) return {ecu: null, functional: true};
+    if (requestHeader === FUNCTIONAL_REQUEST_HEADER || requestHeader === FUNCTIONAL_HEADER_29)
+        return {ecu: null, functional: true};
     const physical11 = /^7E([0-7])$/.exec(requestHeader);
-    if (physical11) return {ecu: `7E${(Number.parseInt(physical11[1], 16) + 8).toString(16).toUpperCase()}`, functional: false};
+    if (physical11)
+        return {ecu: `7E${(Number.parseInt(physical11[1] ?? '0', 16) + 8).toString(16).toUpperCase()}`, functional: false};
     const physical29 = /^18DA([0-9A-F]{2})F1$/.exec(requestHeader);
     if (physical29) {
-        const offset = Number.parseInt(physical29[1], 16) - SOURCE_BASE_29;
+        const offset = Number.parseInt(physical29[1] ?? '00', 16) - SOURCE_BASE_29;
         const index = offset / SOURCE_STEP_29;
-        if (Number.isInteger(index) && index >= 0 && index < 8) return {ecu: `7E${(8 + index).toString(16).toUpperCase()}`, functional: false};
+        if (Number.isInteger(index) && index >= 0 && index < 8)
+            return {ecu: `7E${(8 + index).toString(16).toUpperCase()}`, functional: false};
     }
     return {ecu: null, functional: false};
 }

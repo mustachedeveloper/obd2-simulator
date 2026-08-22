@@ -13,26 +13,42 @@ describe('control commands', () => {
         expect(applyControlCommand('dtc p0171 pending', live)).toBe('ok 2 engine(s): injected P0171 (pending)');
         expect(live.map((engine) => engine.handleCommand('03'))).toEqual(['43010301', '43010301']);
         expect(applyControlCommand('set 05 120', live)).toBe('ok 2 engine(s): PID 05 = 120');
-        expect(live[0].handleCommand('0105')).toBe('4105A0');
+        expect(live[0]?.handleCommand('0105')).toBe('4105A0');
         expect(applyControlCommand('set 0C null', live)).toBe('ok 2 engine(s): PID 0C = NO DATA');
         expect(applyControlCommand('ignition key-on', live)).toBe('ok 2 engine(s): ignition key-on');
         expect(applyControlCommand('fail BUFFER FULL 2', live)).toBe('ok 2 engine(s): next 2 request(s) → BUFFER FULL');
-        expect(live[1].handleCommand('010D')).toBe('BUFFER FULL');
+        expect(live[1]?.handleCommand('010D')).toBe('BUFFER FULL');
         expect(applyControlCommand('adapter clone', live)).toBe('ok 2 engine(s): adapter clone-v2.1');
         expect(applyControlCommand('clear dtcs', live)).toBe('ok 2 engine(s): DTCs cleared');
         expect(applyControlCommand('clear overrides', live)).toBe('ok 2 engine(s): overrides cleared');
         expect(applyControlCommand('clear faults', live)).toBe('ok 2 engine(s): faults cleared');
-        expect(live[0].storedDtcs).toEqual([]);
+        expect(live[0]?.storedDtcs).toEqual([]);
     });
 
     it('reports status as JSON and explains mistakes', () => {
         const live = engines();
-        live[0].injectDtc('P0420');
+        live[0]?.injectDtc('P0420');
         const status = applyControlCommand('status', live);
         expect(status.startsWith('ok ')).toBe(true);
         expect(JSON.parse(status.slice(3))).toEqual([
-            {ignition: 'running', adapter: 'default', storedDtcs: ['P0420'], pendingDtcs: [], permanentDtcs: [], overrides: {}, pendingFaults: []},
-            {ignition: 'running', adapter: 'default', storedDtcs: [], pendingDtcs: [], permanentDtcs: [], overrides: {}, pendingFaults: []},
+            {
+                ignition: 'running',
+                adapter: 'default',
+                storedDtcs: ['P0420'],
+                pendingDtcs: [],
+                permanentDtcs: [],
+                overrides: {},
+                pendingFaults: [],
+            },
+            {
+                ignition: 'running',
+                adapter: 'default',
+                storedDtcs: [],
+                pendingDtcs: [],
+                permanentDtcs: [],
+                overrides: {},
+                pendingFaults: [],
+            },
         ]);
         expect(applyControlCommand('dtc garbage', live)).toMatch(/^error invalid DTC "garbage"/);
         expect(applyControlCommand('set ZZ 1', live)).toMatch(/^error /);
@@ -60,7 +76,12 @@ describe('control server', () => {
         });
         await new Promise<void>((resolve) => obd.once('listening', () => resolve()));
         const applied: string[] = [];
-        const control = createControlServer({port: 0, host: '127.0.0.1', engines: () => [...live], onApplied: (line, reply) => applied.push(`${line} → ${reply.slice(0, 2)}`)});
+        const control = createControlServer({
+            port: 0,
+            host: '127.0.0.1',
+            engines: () => [...live],
+            onApplied: (line, reply) => applied.push(`${line} → ${reply.slice(0, 2)}`),
+        });
         await new Promise<void>((resolve) => control.once('listening', () => resolve()));
         const port = (address: ReturnType<typeof obd.address>) => (typeof address === 'object' && address ? address.port : 0);
 

@@ -10,13 +10,17 @@ import {applyControlCommand} from './control';
 export interface ControlServerOptions {
     port?: number;
     host?: string;
-    // The engines currently serving clients.
+    /**
+     * The engines currently serving clients.
+     */
     engines: () => readonly SimulatorEngine[];
     onListening?: (port: number) => void;
     onError?: (error: Error) => void;
     onClientError?: (remote: string, error: Error) => void;
-    // Every processed line with its reply — e.g. to replay the successful
-    // ones on engines created later, so the scenario outlives reconnects.
+    /**
+     * Every processed line with its reply — e.g. to replay the successful
+     * ones on engines created later, so the scenario outlives reconnects.
+     */
     onApplied?: (line: string, reply: string) => void;
 }
 

@@ -5,12 +5,16 @@
         "moduleResolution": "Bundler",
         "lib": ["ES2020"],
         "strict": true,
-        "noUncheckedIndexedAccess": false,
+        "noUncheckedIndexedAccess": true,
         "declaration": true,
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true,
         "types": ["node"],
-        "outDir": "dist"
+        "outDir": "dist",
+        "verbatimModuleSyntax": true,
+        "noImplicitOverride": true,
+        "noFallthroughCasesInSwitch": true,
+        "isolatedModules": true
     },
-    "include": ["src", "tests"]
+    "include": ["src", "tests", "*.ts"]
 }

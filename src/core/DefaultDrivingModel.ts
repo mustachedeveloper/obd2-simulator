@@ -38,9 +38,13 @@ function gearFactor(speedKmh: number): number {
 }
 
 export interface DefaultDrivingModelOptions {
-    // Reported by PID 0x51 (1 = gasoline, 4 = diesel...).
+    /**
+     * Reported by PID 0x51 (1 = gasoline, 4 = diesel...).
+     */
     fuelType?: number;
-    // Odometer reading at power-on (PID 0xA6 accumulates on top).
+    /**
+     * Odometer reading at power-on (PID 0xA6 accumulates on top).
+     */
     odometerKm?: number;
 }
 
@@ -205,8 +209,10 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x9b:
                 return clamp(78 - (elapsedSeconds / 3600) * 0.05, 0, 100); // DEF level
             case 0xa4: {
-                // Gear ratio from the same rpm-per-speed table; no data at
-                // standstill (matches vehicles that gate it on motion).
+                /**
+                 * Gear ratio from the same rpm-per-speed table; no data at
+                 * standstill (matches vehicles that gate it on motion).
+                 */
                 if (state.speedKmh < 1) return null;
                 return gearFactor(state.speedKmh) / 24;
             }

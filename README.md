@@ -1,5 +1,10 @@
 # obd2-simulator
 
+[![npm](https://img.shields.io/npm/v/obd2-simulator)](https://www.npmjs.com/package/obd2-simulator)
+[![CI](https://github.com/mustachedeveloper/obd2-simulator/actions/workflows/ci.yml/badge.svg)](https://github.com/mustachedeveloper/obd2-simulator/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/obd2-simulator)](./LICENSE)
+![dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen)
+
 A zero-dependency **ELM327 / OBD-II vehicle simulator** — a fake car for testing diagnostic apps.
 
 Feed it the exact ASCII commands a real ELM327 adapter receives; get back the exact bytes a real adapter prints — echo, spaces, `\r\r>` prompt framing, `SEARCHING...`, ISO-TP multi-frame responses, one line per ECU, negative responses, supported-PID masks. Your parsers, schedulers and UI run their **real code paths** against it. Output is checked against recordings of real adapters ([`tests/fixtures/wirelog`](./tests/fixtures/wirelog)).
@@ -218,9 +223,9 @@ Same seed + same clock → byte-identical output (latency jitter included). `Mem
 - Additional ECU ids are `7E9..7EF` and map to fixed 29-bit source addresses (`0x10 + 8·n`); the `ATSH`/`ATCRA` width must match the active protocol, as on hardware.
 - No transport-level fault injection yet (`BUFFER FULL`, `CAN ERROR`, dropped chunks).
 
-## Changelog
+## Changelog & contributing
 
-See [CHANGELOG.md](./CHANGELOG.md).
+See [CHANGELOG.md](./CHANGELOG.md), [CONTRIBUTING.md](./CONTRIBUTING.md) and [SECURITY.md](./SECURITY.md).
 
 ## License
 

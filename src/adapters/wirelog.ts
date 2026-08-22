@@ -14,12 +14,16 @@ export interface WireLogEntry {
 
 export interface PersonaFromWireLogOptions {
     name: string;
-    // Fields the recording cannot reveal are copied from here.
+    /**
+     * Fields the recording cannot reveal are copied from here.
+     */
     base?: AdapterPersona;
 }
 
 export interface LatencyFromWireLogOptions {
-    // Latency for commands the recording never issued.
+    /**
+     * Latency for commands the recording never issued.
+     */
     fallbackMs?: number;
 }
 
@@ -32,13 +36,19 @@ const TIMEOUT_UNIT_MS = 4;
 const DEFAULT_FALLBACK_MS = 50;
 
 const normalize = (command: string): string => command.replace(/\s+/g, '').toUpperCase();
-const lines = (text: string): string[] => text.split(/\r\n?|\n/).map((line) => line.trim()).filter(Boolean);
+const lines = (text: string): string[] =>
+    text
+        .split(/\r\n?|\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
 
 function median(values: readonly number[]): number | null {
     if (values.length === 0) return null;
     const sorted = [...values].sort((a, b) => a - b);
     const middle = Math.floor(sorted.length / 2);
-    return sorted.length % 2 === 1 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+    const upper = sorted[middle] ?? 0;
+    const lower = sorted[middle - 1] ?? upper;
+    return sorted.length % 2 === 1 ? upper : Math.round((lower + upper) / 2);
 }
 
 // Banner text, whatever junk precedes it on its line, and whether a blank
@@ -51,10 +61,15 @@ function bannerOf(entries: readonly WireLogEntry[]): {banner: string; prefix: st
         const withoutEcho = raw.filter((line) => normalize(line) !== command);
         const index = withoutEcho.findIndex((line) => BANNER.test(line));
         if (index < 0) continue;
-        const line = withoutEcho[index];
-        const match = BANNER.exec(line)!;
+        const line = withoutEcho[index] ?? '';
+        const match = BANNER.exec(line);
+        if (!match) continue;
         const prefix = line.slice(0, match.index);
-        return {banner: match[1], prefix: prefix.length > 0 ? prefix : undefined, blankLine: index > 0 && withoutEcho[index - 1] === ''};
+        return {
+            banner: match[1] ?? line,
+            prefix: prefix.length > 0 ? prefix : undefined,
+            blankLine: index > 0 && withoutEcho[index - 1] === '',
+        };
     }
     return null;
 }
@@ -95,7 +110,7 @@ function spacesBeforeAts0(entries: readonly WireLogEntry[]): boolean | null {
 // never set one (unknown, so nothing is subtracted from the measurements).
 function waitWindowMs(entries: readonly WireLogEntry[]): number {
     const set = entries.map((entry) => /^ATST([0-9A-F]{2})$/.exec(normalize(entry.c))).find(Boolean);
-    return set ? Number.parseInt(set[1], 16) * TIMEOUT_UNIT_MS : 0;
+    return set ? Number.parseInt(set[1] ?? '0', 16) * TIMEOUT_UNIT_MS : 0;
 }
 
 export function personaFromWireLog(entries: readonly WireLogEntry[], options: PersonaFromWireLogOptions): AdapterPersona {
@@ -103,7 +118,9 @@ export function personaFromWireLog(entries: readonly WireLogEntry[], options: Pe
     const banner = bannerOf(entries);
     const hint = honorsHint(entries) ?? base.honorsResponseHint;
     const search = entries.find((entry) => /SEARCHING/.test(entry.r));
-    const hinted = entries.filter((entry) => HINTED_SINGLE_PID.test(normalize(entry.c)) && !/SEARCHING/.test(entry.r)).map((entry) => entry.d);
+    const hinted = entries
+        .filter((entry) => HINTED_SINGLE_PID.test(normalize(entry.c)) && !/SEARCHING/.test(entry.r))
+        .map((entry) => entry.d);
     const measured = median(hinted);
     // A hint-ignoring adapter sat through the ATST window on every one of
     // those requests; the persona models that window separately.
@@ -125,9 +142,14 @@ export function personaFromWireLog(entries: readonly WireLogEntry[], options: Pe
     };
 }
 
-// Per-command median round-trip from the recording, keyed by the engine's
-// normalized command form — plug into SimulatorEngineOptions.latencyFor.
-export function latencyFromWireLog(entries: readonly WireLogEntry[], options: LatencyFromWireLogOptions = {}): (command: string) => number {
+/**
+ * Per-command median round-trip from the recording, keyed by the engine's
+ * normalized command form — plug into SimulatorEngineOptions.latencyFor.
+ */
+export function latencyFromWireLog(
+    entries: readonly WireLogEntry[],
+    options: LatencyFromWireLogOptions = {},
+): (command: string) => number {
     const samples = new Map<string, number[]>();
     for (const entry of entries) {
         const key = normalize(entry.c);

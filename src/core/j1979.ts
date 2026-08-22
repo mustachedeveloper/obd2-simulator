@@ -13,12 +13,12 @@ export interface PidEncoder {
     encode: (value: number) => number[];
 }
 
-const pct = (value: number): number[] => [Math.round((clamp(value, 0, 100) * 255) / 100)];
-const temp = (value: number): number[] => [Math.round(clamp(value, -40, 215)) + 40];
-const raw1 = (value: number): number[] => [Math.round(clamp(value, 0, 255))];
-const fuelTrim = (value: number): number[] => [Math.round(clamp((value + 100) * 1.28, 0, 255))];
+const pct = (value: number): [number] => [Math.round((clamp(value, 0, 100) * 255) / 100)];
+const temp = (value: number): [number] => [Math.round(clamp(value, -40, 215)) + 40];
+const raw1 = (value: number): [number] => [Math.round(clamp(value, 0, 255))];
+const fuelTrim = (value: number): [number] => [Math.round(clamp((value + 100) * 1.28, 0, 255))];
 const o2Voltage = (value: number): number[] => [Math.round(clamp(value, 0, 1.275) * 200), 0xff];
-const torque = (value: number): number[] => [Math.round(clamp(value, -125, 130)) + 125];
+const torque = (value: number): [number] => [Math.round(clamp(value, -125, 130)) + 125];
 const minutes = (value: number): number[] => word(Math.round(clamp(value, 0, 65535)));
 const catTemp = (value: number): number[] => word(Math.round(clamp((value + 40) * 10, 0, 65535)));
 // Wide-band lambda (4-byte PIDs): ratio in AB, nominal voltage word in CD.
@@ -98,7 +98,14 @@ export const PID_ENCODERS: Readonly<Record<number, PidEncoder>> = {
     0x63: {bytes: 2, encode: (v) => word(Math.round(clamp(v, 0, 65535)))}, // reference torque
     // ── Packet PIDs: byte A is the sensor-support bitmap ─────────────
     0x64: {bytes: 5, encode: (v) => [torque(v)[0], torque(v + 40)[0], torque(v + 70)[0], torque(v + 90)[0], torque(v + 95)[0]]},
-    0x66: {bytes: 5, encode: (v) => [0x03, ...word(Math.round(clamp(v, 0, 2047) / 0.03125)), ...word(Math.round((clamp(v, 0, 2047) * 0.98) / 0.03125))]},
+    0x66: {
+        bytes: 5,
+        encode: (v) => [
+            0x03,
+            ...word(Math.round(clamp(v, 0, 2047) / 0.03125)),
+            ...word(Math.round((clamp(v, 0, 2047) * 0.98) / 0.03125)),
+        ],
+    },
     0x67: {bytes: 3, encode: (v) => [0x03, temp(v)[0], temp(v - 2)[0]]},
     0x68: {bytes: 7, encode: (v) => [0x03, temp(v)[0], temp(v + 1)[0], 0, 0, 0, 0]},
     0x69: {bytes: 7, encode: (v) => [0x07, pct(v)[0], pct(v * 0.95)[0], fuelTrim(0)[0], 0, 0, 0]},
@@ -107,16 +114,30 @@ export const PID_ENCODERS: Readonly<Record<number, PidEncoder>> = {
     0x74: {bytes: 5, encode: (v) => [0x01, ...word(Math.round(clamp(v, 0, 65535))), 0, 0]},
     0x78: {bytes: 9, encode: (v) => [0x03, ...egtWord(v), ...egtWord(v - 30), 0, 0, 0, 0]},
     0x79: {bytes: 9, encode: (v) => [0x01, ...egtWord(v), 0, 0, 0, 0, 0, 0]},
-    0x7a: {bytes: 7, encode: (v) => [0x07, ...word(Math.round(clamp(v, 0, 655) * 100)), ...word(Math.round(clamp(v + 2, 0, 655) * 100)), ...word(Math.round(clamp(2, 0, 655) * 100))]},
+    0x7a: {
+        bytes: 7,
+        encode: (v) => [
+            0x07,
+            ...word(Math.round(clamp(v, 0, 655) * 100)),
+            ...word(Math.round(clamp(v + 2, 0, 655) * 100)),
+            ...word(Math.round(clamp(2, 0, 655) * 100)),
+        ],
+    },
     0x7c: {bytes: 9, encode: (v) => [0x03, ...egtWord(v), ...egtWord(v - 60), 0, 0, 0, 0]},
-    0x83: {bytes: 5, encode: (v) => [0x03, ...word(Math.round(clamp(v, 0, 65535))), ...word(Math.round(clamp(v * 0.6, 0, 65535)))]},
+    0x83: {
+        bytes: 5,
+        encode: (v) => [0x03, ...word(Math.round(clamp(v, 0, 65535))), ...word(Math.round(clamp(v * 0.6, 0, 65535)))],
+    },
     0x8e: {bytes: 1, encode: torque}, // friction torque
     0x9b: {bytes: 7, encode: (v) => [0x0f, 82, 65, Math.round((clamp(v, 0, 100) * 255) / 100), 0, 0, 0]}, // DEF: level in byte D
     0xa4: {bytes: 4, encode: (v) => [0x00, 0x01, ...word(Math.round(clamp(v, 0, 65.535) * 1000))]}, // gear ratio in CD
-    0xa6: {bytes: 4, encode: (v) => {
-        const tenths = Math.round(clamp(v, 0, 429_496_729) * 10);
-        return [(tenths >>> 24) & 0xff, (tenths >>> 16) & 0xff, (tenths >>> 8) & 0xff, tenths & 0xff];
-    }}, // odometer
+    0xa6: {
+        bytes: 4,
+        encode: (v) => {
+            const tenths = Math.round(clamp(v, 0, 429_496_729) * 10);
+            return [(tenths >>> 24) & 0xff, (tenths >>> 16) & 0xff, (tenths >>> 8) & 0xff, tenths & 0xff];
+        },
+    }, // odometer
 };
 
 const DTC_SYSTEM_LETTERS = ['P', 'C', 'B', 'U'] as const;
@@ -125,9 +146,10 @@ const DTC_SYSTEM_LETTERS = ['P', 'C', 'B', 'U'] as const;
 export function encodeDtc(code: string): [number, number] | null {
     const match = /^([PCBU])([0-3])([0-9A-F]{3})$/i.exec(code.trim());
     if (!match) return null;
-    const system = DTC_SYSTEM_LETTERS.indexOf(match[1].toUpperCase() as (typeof DTC_SYSTEM_LETTERS)[number]);
-    const firstDigit = Number.parseInt(match[2], 10);
-    const remaining = Number.parseInt(match[3], 16);
+    const [, letter = '', digit = '0', rest = '000'] = match;
+    const system = DTC_SYSTEM_LETTERS.indexOf(letter.toUpperCase() as (typeof DTC_SYSTEM_LETTERS)[number]);
+    const firstDigit = Number.parseInt(digit, 10);
+    const remaining = Number.parseInt(rest, 16);
     return [(system << 6) | (firstDigit << 4) | (remaining >> 8), remaining & 0xff];
 }
 
@@ -147,11 +169,12 @@ export function maskBytesFor(ids: ReadonlySet<number>, baseId: number): string {
     for (const id of ids) {
         if (id > baseId && id <= baseId + 0x20) {
             const offset = id - baseId - 1;
-            maskBytes[Math.floor(offset / 8)] |= 0x80 >> (offset % 8);
+            const index = Math.floor(offset / 8);
+            maskBytes[index] = (maskBytes[index] ?? 0) | (0x80 >> (offset % 8));
         }
     }
     if ([...ids].some((id) => id > baseId + 0x20)) {
-        maskBytes[3] |= 0x01;
+        maskBytes[3] = (maskBytes[3] ?? 0) | 0x01;
     }
     return maskBytes.map(toHex).join('');
 }

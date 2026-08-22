@@ -10,10 +10,35 @@ describe('CLI argument parsing', () => {
     });
 
     it('accepts every option, repeatable --dtc included', () => {
-        const result = parseArgs(['-p', '4000', '--host', '127.0.0.1', '--profile', 'diesel', '--adapter', 'clone', '--dtc', 'p0301', '--dtc', 'P0420', '--seed', '7', '--control', '4001']);
+        const result = parseArgs([
+            '-p',
+            '4000',
+            '--host',
+            '127.0.0.1',
+            '--profile',
+            'diesel',
+            '--adapter',
+            'clone',
+            '--dtc',
+            'p0301',
+            '--dtc',
+            'P0420',
+            '--seed',
+            '7',
+            '--control',
+            '4001',
+        ]);
         expect(result).toEqual({
             kind: 'run',
-            options: {port: 4000, host: '127.0.0.1', profile: 'diesel', adapter: 'clone', dtcs: ['P0301', 'P0420'], seed: 7, control: 4001},
+            options: {
+                port: 4000,
+                host: '127.0.0.1',
+                profile: 'diesel',
+                adapter: 'clone',
+                dtcs: ['P0301', 'P0420'],
+                seed: 7,
+                control: 4001,
+            },
         });
     });
 

@@ -31,8 +31,9 @@ const KEEP_PREFIX = 4;
 function maskLine(line: string): string {
     if (VOLTAGE_LINE.test(line)) return '<voltage>';
     const segment = SEGMENT_LINE.exec(line);
-    if (segment) return `${segment[1]}:${'X'.repeat(segment[2].length)}`;
-    if (HEX_LINE.test(line) && line.length > KEEP_PREFIX) return line.slice(0, KEEP_PREFIX) + 'X'.repeat(line.length - KEEP_PREFIX);
+    if (segment) return `${segment[1]}:${'X'.repeat((segment[2] ?? '').length)}`;
+    if (HEX_LINE.test(line) && line.length > KEEP_PREFIX)
+        return line.slice(0, KEEP_PREFIX) + 'X'.repeat(line.length - KEEP_PREFIX);
     return line;
 }
 

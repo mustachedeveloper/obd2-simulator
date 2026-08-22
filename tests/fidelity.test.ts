@@ -14,7 +14,11 @@ import type {AdapterPersona, VehicleProfile} from '../src/index';
 
 // Hardware personas search for the protocol on the first request in auto
 // mode; tests that are not about the search pin the protocol first.
-const engineWith = (adapter: AdapterPersona = DEFAULT_ADAPTER, profile: VehicleProfile = GASOLINE_PROFILE, init: string[] = ['ATE0', 'ATSP6']) => {
+const engineWith = (
+    adapter: AdapterPersona = DEFAULT_ADAPTER,
+    profile: VehicleProfile = GASOLINE_PROFILE,
+    init: string[] = ['ATE0', 'ATSP6'],
+) => {
     const engine = new SimulatorEngine({now: () => 0, seed: 7, adapter, profile});
     for (const command of init) engine.handleCommand(command);
     return engine;
@@ -57,7 +61,9 @@ describe('spaces (ATS)', () => {
         expect(vlinker.handleCommand('ATS0')).toBe('OK');
         expect(vlinker.handleCommand('010C 1')).toMatch(/^410C[0-9A-F]{4}$/);
         expect(vlinker.handleCommand('ATS1')).toBe('OK');
-        expect(vlinker.handleCommand('0902')).toMatch(/^014\r0: 49 02 01 57 56 57\r1: 5A 5A 5A 31 4B 5A 42\r2: 57 31 32 33 34 35 36$/);
+        expect(vlinker.handleCommand('0902')).toMatch(
+            /^014\r0: 49 02 01 57 56 57\r1: 5A 5A 5A 31 4B 5A 42\r2: 57 31 32 33 34 35 36$/,
+        );
         expect(vlinker.linkState.spaces).toBe(true);
     });
 

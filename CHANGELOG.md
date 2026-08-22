@@ -43,6 +43,14 @@ adapter while the app under test is talking to it.
   and bad PIDs, `failNext()` / `corruptNext()` cap the queue at 1000,
   `restore()` checks the whole snapshot first and leaves the engine untouched
   when it throws.
+- Tooling: Biome lint/format (`npm run lint` / `format`), `npm run check`,
+  coverage thresholds (`vitest.config.ts`), CI matrix Node 20/22/24 + a Node
+  18 runtime smoke, tag ↔ version check before publish, Dependabot;
+  `tsconfig` with `noUncheckedIndexedAccess` / `verbatimModuleSyntax`;
+  public API documented with TSDoc; unit tests for the J1979 encoders, DTC
+  codec, support masks, ISO-TP framing, CAN addressing, driving model, PRNG
+  and timing; a VM-sandbox test proving the core bundle needs no Node APIs;
+  `CONTRIBUTING.md`, `SECURITY.md`.
 - Wire-log loaders: `personaFromWireLog(entries, {name, base})` derives
   banner (+ prefix quirk), hint handling, spaces, protocol search time and
   base/jitter latency from a `{c, r, d}` recording; `latencyFromWireLog
