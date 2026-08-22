@@ -95,6 +95,8 @@ export class DefaultDrivingModel implements DrivingModel {
                 return 300 + jitter(6); // fuel pressure
             case 0x12:
                 return 4; // secondary air: off / atmosphere
+            case 0x13:
+                return 0x03; // O2 sensors: bank 1 sensors 1 + 2
             case 0x15:
                 return clamp(0.4 + jitter(0.2), 0.05, 0.9); // O2 S2 voltage
             case 0x1c:

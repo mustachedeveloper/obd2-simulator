@@ -34,7 +34,6 @@ export interface TcpServerOptions {
 const DEFAULT_PORT = 35000;
 const DEFAULT_HOST = '0.0.0.0';
 const DEFAULT_MAX_LINE_LENGTH = 512;
-const PROMPT = '\r\n>';
 const LINE_END = /[\r\n]/;
 
 const remoteOf = (socket: Socket): string => `${socket.remoteAddress ?? '?'}:${socket.remotePort ?? '?'}`;
@@ -52,7 +51,7 @@ function serveClient(socket: Socket, engine: SimulatorEngine, options: Required<
                 new Promise<void>((resolve) => {
                     const timer = setTimeout(() => {
                         timers.delete(timer);
-                        if (!socket.destroyed) socket.write(`${response}${PROMPT}`);
+                        if (!socket.destroyed) socket.write(response);
                         resolve();
                     }, delayMs);
                     timers.add(timer);
@@ -68,16 +67,16 @@ function serveClient(socket: Socket, engine: SimulatorEngine, options: Required<
         while (newline >= 0) {
             const line = buffer.slice(0, newline).trim();
             buffer = buffer.slice(newline + 1);
-            if (line.length > options.maxLineLength) reply('?', 0);
+            if (line.length > options.maxLineLength) reply(engine.wireFor('?'), 0);
             else if (line.length > 0) {
                 const result = engine.execute(line);
-                reply(result.response, Math.round(result.latency.totalMs * options.latencyScale));
+                reply(result.wire, Math.round(result.latency.totalMs * options.latencyScale));
             }
             newline = buffer.search(LINE_END);
         }
         if (buffer.length > options.maxLineLength) {
             buffer = '';
-            reply('?', 0);
+            reply(engine.wireFor('?'), 0);
         }
     });
     socket.on('close', () => {

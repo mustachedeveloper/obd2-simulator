@@ -2,16 +2,32 @@ import {describe, expect, it} from 'vitest';
 import {
     CLONE_V21_ADAPTER,
     DEFAULT_ADAPTER,
+    GASOLINE_PROFILE,
     GENUINE_ELM_ADAPTER,
+    REFERENCE_SECOND_ECU_PIDS,
     SimulatorEngine,
     STN_ADAPTER,
     VLINKER_ADAPTER,
 } from '../src/index';
-import type {AdapterPersona, DrivingModel} from '../src/index';
+import type {AdapterPersona, DrivingModel, VehicleProfile} from '../src/index';
 
+// A two-ECU vehicle on 11-bit CAN: the engine plus a transmission ECU
+// serving the reference car's subset.
+const TWO_ECU_PROFILE: VehicleProfile = {
+    ...GASOLINE_PROFILE,
+    additionalEcus: [{id: '7E9', pids: REFERENCE_SECOND_ECU_PIDS.filter((pid) => pid % 0x20 !== 0)}],
+};
+
+// Protocol pinned so hardware personas skip the SEARCHING phase.
 const engineWith = (adapter?: AdapterPersona, extra: ConstructorParameters<typeof SimulatorEngine>[0] = {}) => {
     const engine = new SimulatorEngine({now: () => 0, seed: 7, adapter, ...extra});
     engine.handleCommand('ATE0');
+    engine.handleCommand('ATSP6');
+    return engine;
+};
+const twoEcu = (adapter: AdapterPersona) => {
+    const engine = engineWith(adapter, {profile: TWO_ECU_PROFILE});
+    engine.handleCommand('ATS0');
     return engine;
 };
 
@@ -35,7 +51,7 @@ describe('AT command recognition', () => {
         const engine = engineWith();
         expect(engine.handleCommand('ATI')).toBe('ELM327 v1.5');
         // Warm start resets echo (like ATZ); it applies from the next command.
-        expect(engine.handleCommand('ATWS')).toBe('ELM327 v1.5');
+        expect(engine.handleCommand('ATWS')).toBe('\rELM327 v1.5');
         expect(engine.handleCommand('ATE0')).toBe('ATE0\rOK');
         expect(engine.handleCommand('AT@1')).toBe('OBDII to RS232 Interpreter');
         expect(engine.handleCommand('AT@2')).toBe('?');
@@ -45,7 +61,7 @@ describe('AT command recognition', () => {
 
     it('answers STN identity only on STN personas', () => {
         const stn = engineWith(STN_ADAPTER);
-        expect(stn.handleCommand('ATZ')).toBe('ELM327 v1.4b');
+        expect(stn.handleCommand('ATZ')).toBe('\rELM327 v1.4b');
         stn.handleCommand('ATE0');
         expect(stn.handleCommand('STI')).toBe(STN_ADAPTER.stn?.firmware);
         expect(stn.handleCommand('STDI')).toBe(STN_ADAPTER.stn?.deviceId);
@@ -87,13 +103,13 @@ describe('AT command recognition', () => {
             requestHeader: '7E0',
         });
         engine.handleCommand('ATZ');
-        expect(engine.linkState).toMatchObject({echo: true, headers: false, timeoutHex: '32', adaptiveTiming: 1, receiveFilter: null});
+        expect(engine.linkState).toMatchObject({echo: true, headers: false, timeoutHex: '32', adaptiveTiming: 1, receiveFilter: null, searched: false});
     });
 });
 
 describe('multi-ECU responses', () => {
     it('prints one line per responding ECU for PIDs the second ECU serves', () => {
-        const clone = engineWith(CLONE_V21_ADAPTER);
+        const clone = twoEcu(CLONE_V21_ADAPTER);
         const rpm = lines(clone.handleCommand('010C'));
         expect(rpm).toHaveLength(2);
         expect(rpm.every((line) => line.startsWith('410C'))).toBe(true);
@@ -106,7 +122,7 @@ describe('multi-ECU responses', () => {
     });
 
     it('prefixes CAN headers + PCI byte under ATH1 and pads frames to 8 bytes', () => {
-        const clone = engineWith(CLONE_V21_ADAPTER);
+        const clone = twoEcu(CLONE_V21_ADAPTER);
         clone.handleCommand('ATH1');
         const rpm = lines(clone.handleCommand('010C'));
         expect(rpm[0]).toMatch(/^7E804410C[0-9A-F]{4}000000$/);
@@ -116,7 +132,7 @@ describe('multi-ECU responses', () => {
     });
 
     it('filters by receive address with ATCRA and clears it without argument', () => {
-        const clone = engineWith(CLONE_V21_ADAPTER);
+        const clone = twoEcu(CLONE_V21_ADAPTER);
         clone.handleCommand('ATCRA7E9');
         clone.handleCommand('ATH1');
         expect(lines(clone.handleCommand('010C'))).toHaveLength(1);
@@ -128,7 +144,7 @@ describe('multi-ECU responses', () => {
     });
 
     it('addresses a single ECU physically via ATSH', () => {
-        const clone = engineWith(CLONE_V21_ADAPTER);
+        const clone = twoEcu(CLONE_V21_ADAPTER);
         clone.handleCommand('ATH1');
         clone.handleCommand('ATSH7E1');
         const only = lines(clone.handleCommand('010C'));
@@ -144,11 +160,11 @@ describe('multi-ECU responses', () => {
     });
 
     it('returns after N responses when the hint is honored, all of them otherwise', () => {
-        const vlinker = engineWith(VLINKER_ADAPTER);
+        const vlinker = twoEcu(VLINKER_ADAPTER);
         expect(lines(vlinker.handleCommand('010C 1'))).toHaveLength(1);
         expect(lines(vlinker.handleCommand('010C 2'))).toHaveLength(2);
         expect(lines(vlinker.handleCommand('010C'))).toHaveLength(2);
-        const clone = engineWith(CLONE_V21_ADAPTER);
+        const clone = twoEcu(CLONE_V21_ADAPTER);
         expect(lines(clone.handleCommand('010C 1'))).toHaveLength(2);
     });
 });
@@ -186,13 +202,13 @@ describe('batch requests and multi-frame framing', () => {
     });
 
     it('keeps the two ECUs sequential on a clean adapter', () => {
-        const vlinker = engineWith(VLINKER_ADAPTER);
+        const vlinker = twoEcu(VLINKER_ADAPTER);
         const parts = lines(vlinker.handleCommand('010C0D0504'));
         expect(parts.map((line) => line.slice(0, 2))).toEqual(['00', '0:', '1:', '00', '0:', '1:']);
     });
 
     it('interleaves the two ECUs segment by segment on a dirty clone', () => {
-        const clone = engineWith(CLONE_V21_ADAPTER);
+        const clone = twoEcu({...CLONE_V21_ADAPTER, batch: {...CLONE_V21_ADAPTER.batch, multiFrameClean: false}});
         const parts = lines(clone.handleCommand('010C0D0504'));
         expect(parts.map((line) => line.slice(0, 2))).toEqual(['00', '00', '0:', '0:', '1:', '1:']);
         clone.handleCommand('ATH1');
@@ -255,6 +271,7 @@ describe('latency model', () => {
     it('sums base, jitter and wait into the total', () => {
         const vlinker = engineWith(VLINKER_ADAPTER);
         vlinker.handleCommand('ATST19');
+        vlinker.handleCommand('ATS0');
         const result = vlinker.execute('010C 1');
         expect(result.latency.baseMs).toBe(VLINKER_ADAPTER.baseLatencyMs);
         expect(Math.abs(result.latency.jitterMs)).toBeLessThanOrEqual(VLINKER_ADAPTER.latencyJitterMs);
@@ -286,18 +303,17 @@ describe('persona switching', () => {
         expect(engine.adapter.baseLatencyMs).toBe(468);
         expect(engine.execute('010C 1').latency.baseMs).toBe(468);
         engine.setAdapter(VLINKER_ADAPTER);
-        expect(engine.handleCommand('ATZ')).toBe('ELM327 v2.3');
+        expect(engine.handleCommand('ATZ')).toBe('\rELM327 v2.3');
     });
 
-    it('rejects personas without any responding ECU', () => {
-        const broken = {...DEFAULT_ADAPTER, respondingEcus: []};
-        expect(() => new SimulatorEngine({adapter: broken})).toThrow(/responding ECU/);
-        expect(() => engineWith().setAdapter(broken)).toThrow(/responding ECU/);
+    it('rejects additional ECUs outside the 7E9..7EF response id range', () => {
+        const broken: VehicleProfile = {...GASOLINE_PROFILE, additionalEcus: [{id: '7E8', pids: []}]};
+        expect(() => new SimulatorEngine({profile: broken})).toThrow(/7E9\.\.7EF/);
     });
 
     it('keeps the default persona identical to the pre-persona behaviour', () => {
         const engine = new SimulatorEngine({now: () => 0});
-        expect(engine.handleCommand('ATZ')).toBe('ATZ\rELM327 v1.5');
+        expect(engine.handleCommand('ATZ')).toBe('ATZ\r\rELM327 v1.5');
         expect(engine.handleCommand('ATE0')).toBe('ATE0\rOK');
         expect(engine.handleCommand('ATL0')).toBe('OK');
         expect(engine.handleCommand('ATSP0')).toBe('OK');

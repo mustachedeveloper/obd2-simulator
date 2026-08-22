@@ -3,8 +3,8 @@ import {SimulatorEngine} from '../core/SimulatorEngine';
 
 // In-process link: the simulator behaving like a connected serial adapter.
 // Platform-agnostic (works in React Native, Node and browsers) — timers are
-// the only environment API used. Emits responses with the same '\r\n>'
-// prompt framing as real ELM327 hardware, split into chunks so consumers
+// the only environment API used. Emits exactly the bytes real ELM327
+// hardware prints (response, blank line, '>' prompt), split into chunks so consumers
 // exercise their buffer-until-prompt logic on every run. Commands are
 // answered strictly in order: a slow response (ATST window) delays the
 // ones queued behind it, like a real single-threaded adapter.
@@ -111,7 +111,7 @@ export class MemoryLink {
                 (this.includeWaitWindow ? result.latency.waitMs : 0),
         );
         this.record({command: result.command, response: result.response, latencyMs, at: Date.now()});
-        const response = `${result.response}\r\n>`;
+        const response = result.wire;
         const session = this.session;
         this.tail = this.tail.then(
             async () => {

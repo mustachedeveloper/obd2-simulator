@@ -6,6 +6,7 @@ export {MemoryLink} from './transports/MemoryLink';
 export type {CommandLogEntry, MemoryLinkOptions} from './transports/MemoryLink';
 export {GASOLINE_PROFILE} from './profiles/gasoline';
 export {DIESEL_PROFILE, dieselDrivingModel} from './profiles/diesel';
+export {REFERENCE_PROFILE} from './profiles/reference';
 export {
     ADAPTER_PRESETS,
     CLONE_V21_ADAPTER,
@@ -21,10 +22,12 @@ export type {
     AdapterPersona,
     AdapterStnIdentity,
     AdaptiveTimingMode,
+    CanProtocol,
     CommandLatency,
     CommandResult,
     DrivingModel,
     DtcStatus,
+    EcuProfile,
     IgnitionType,
     LinkState,
     LinkStatus,

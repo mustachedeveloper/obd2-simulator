@@ -1,12 +1,15 @@
 import {toHex} from './j1979';
+import {headerText} from './ecus';
 
 // ECU responses → the text an ELM327 prints. With headers off, single-frame
 // payloads are one hex line and longer ones use the ISO-TP long form
 // ('00A' length line, then 'N:' segments of 6/7 bytes). With headers on
 // the adapter cannot reassemble, so raw CAN frames are printed: response id,
-// PCI byte(s), data, zero padding to 8 bytes.
+// PCI byte(s), data, zero padding to 8 bytes. ATS1 puts a space between
+// every printed byte (and after the 'N:' segment prefix).
 
 export interface EcuResponse {
+    // 11-bit response id of the ECU ('7E8').
     ecu: string;
     // Service bytes: [0x41, pid, data...] etc.
     payload: readonly number[];
@@ -28,15 +31,15 @@ export function canFrames(payload: readonly number[]): number[][] {
     return frames;
 }
 
-const hex = (bytes: readonly number[]): string => bytes.map(toHex).join('');
+const hex = (bytes: readonly number[], spaces: boolean): string => bytes.map(toHex).join(spaces ? ' ' : '');
 
-export function isoTpLines(payload: readonly number[]): string[] {
-    if (payload.length <= SINGLE_FRAME_MAX) return [hex(payload)];
+export function isoTpLines(payload: readonly number[], spaces = false): string[] {
+    if (payload.length <= SINGLE_FRAME_MAX) return [hex(payload, spaces)];
     const lines = [payload.length.toString(16).toUpperCase().padStart(3, '0')];
     let offset = 0;
     for (let segment = 0; offset < payload.length; segment++) {
         const take = segment === 0 ? FIRST_FRAME_DATA : CONSECUTIVE_FRAME_DATA;
-        lines.push(`${(segment % 16).toString(16).toUpperCase()}:${hex(payload.slice(offset, offset + take))}`);
+        lines.push(`${(segment % 16).toString(16).toUpperCase()}:${spaces ? ' ' : ''}${hex(payload.slice(offset, offset + take), spaces)}`);
         offset += take;
     }
     return lines;
@@ -44,24 +47,28 @@ export function isoTpLines(payload: readonly number[]): string[] {
 
 export interface FramingOptions {
     headers: boolean;
+    spaces: boolean;
+    // 29-bit CAN ids (ISO 15765-4 CAN 29/xxx).
+    extended: boolean;
     // true → ECU segments arrive round-robin (dirty clone output).
     interleave: boolean;
 }
 
-function ecuLines(response: EcuResponse, headers: boolean): string[] {
-    if (!headers) return isoTpLines(response.payload);
-    return canFrames(response.payload).map((frame) => `${response.ecu}${hex(frame)}`);
+function ecuLines(response: EcuResponse, options: FramingOptions): string[] {
+    if (!options.headers) return isoTpLines(response.payload, options.spaces);
+    const header = headerText(response.ecu, options.extended, options.spaces);
+    return canFrames(response.payload).map((frame) => `${header}${options.spaces ? ' ' : ''}${hex(frame, options.spaces)}`);
 }
 
-export function formatResponses(responses: readonly EcuResponse[], options: FramingOptions): string {
-    const perEcu = responses.map((response) => ecuLines(response, options.headers));
-    if (!options.interleave || perEcu.length < 2) return perEcu.flat().join('\r');
+export function formatLines(responses: readonly EcuResponse[], options: FramingOptions): string[] {
+    const perEcu = responses.map((response) => ecuLines(response, options));
+    if (!options.interleave || perEcu.length < 2) return perEcu.flat();
     const depth = Math.max(...perEcu.map((lines) => lines.length));
     const interleaved: string[] = [];
     for (let index = 0; index < depth; index++) {
         for (const lines of perEcu) if (index < lines.length) interleaved.push(lines[index]);
     }
-    return interleaved.join('\r');
+    return interleaved;
 }
 
 export const hexToBytes = (text: string): number[] => text.match(/.{2}/g)?.map((pair) => Number.parseInt(pair, 16)) ?? [];

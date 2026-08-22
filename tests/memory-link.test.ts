@@ -28,7 +28,7 @@ describe('MemoryLink', () => {
         const pending = collectUntilPrompt(link);
         await link.write('ATZ');
         const response = await pending;
-        expect(response).toBe('ATZ\rELM327 v1.5\r\n>');
+        expect(response).toBe('ATZ\r\rELM327 v1.5\r\r>');
         await link.disconnect();
     });
 
@@ -50,7 +50,7 @@ describe('MemoryLink timing and history', () => {
         await link.write('ATRV'); // 1 ms
         await new Promise((resolve) => setTimeout(resolve, 260));
         const joined = received.join('');
-        expect(joined.indexOf('410C')).toBeLessThan(joined.indexOf('V\r\n>'));
+        expect(joined.indexOf('410C')).toBeLessThan(joined.indexOf('V\r\r>'));
         expect(link.history.map((entry) => entry.command)).toEqual(['ATE0', '010C', 'ATRV']);
         expect(link.history[1].latencyMs).toBe(201);
         expect(link.history[2].response).toMatch(/V$/);
@@ -72,7 +72,7 @@ describe('MemoryLink timing and history', () => {
         await link.connect();
         const pending = collectUntilPrompt(link);
         await link.write('ATRV');
-        expect(await pending).toMatch(/V\r\n>$/);
+        expect(await pending).toMatch(/V\r\r>$/);
         await link.disconnect();
     });
 

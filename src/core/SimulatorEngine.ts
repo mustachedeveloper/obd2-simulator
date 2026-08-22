@@ -1,31 +1,38 @@
 import type {
     AdapterPersona,
+    CanProtocol,
     CommandResult,
     DrivingModel,
     DtcStatus,
+    EcuProfile,
     LinkState,
+    ReadinessBytes,
     SimulatorLogger,
     VehicleProfile,
 } from './types';
 import {DefaultDrivingModel} from './DefaultDrivingModel';
 import {mulberry32} from './prng';
-import {PID_ENCODERS, asciiBytes, encodeDtc, maskBytesFor, normalizeDtc, toHex} from './j1979';
+import {PID_ENCODERS, encodeDtc, maskBytesFor, normalizeDtc, toHex} from './j1979';
 import {GASOLINE_PROFILE} from '../profiles/gasoline';
 import {DEFAULT_ADAPTER} from '../adapters/presets';
-import {FUNCTIONAL_REQUEST_HEADER, handleAtCommand, handleStCommand, resetLinkState} from './at-commands';
-import {formatResponses, hexToBytes, type EcuResponse} from './framing';
+import {AUTO_PROTOCOL, handleAtCommand, handleStCommand, resetLinkState} from './at-commands';
+import {formatLines, hexToBytes, type EcuResponse} from './framing';
+import {ADDITIONAL_ECU_ID, ENGINE_ECU_ID, addressedEcus, isExtended} from './ecus';
+import {mode09Responses, type VehicleInfoSource} from './mode09';
 import {waitMsFor, type CommandKind} from './timing';
 
 // Wire-level fake vehicle + ELM327 adapter in one object: feed it the exact
 // ASCII commands a real adapter receives, get back the exact text a real
-// adapter prints (echo behavior, ISO-TP long-response framing, support
-// masks) plus the latency the adapter would have taken. Transports
-// (in-process link, TCP server) only move these strings and wait.
+// adapter prints (echo, spaces, line endings, ISO-TP long-response framing,
+// support masks, multi-ECU lines, negative responses, SEARCHING...) plus the
+// latency the adapter would have taken. Transports (in-process link, TCP
+// server) only move these strings and wait.
 //
 // Simulated surface: AT/ST command set, mode 01 (profile PID set + status
 // PIDs 0x01/0x41, batch, multi-ECU), mode 02 freeze frame, modes 03/07/0A
-// + 04 DTC lifecycle, mode 06 monitor tests, mode 09 vehicle info. The
-// adapter persona decides identity, quirks and timing.
+// + 04 DTC lifecycle, mode 06 monitor tests, mode 09 vehicle info; every
+// other hex request is rejected with 7F xx 11. The vehicle profile decides
+// which ECUs answer; the adapter persona decides identity, quirks and timing.
 
 export interface SimulatorEngineOptions {
     profile?: VehicleProfile;
@@ -40,20 +47,45 @@ export interface SimulatorEngineOptions {
     latencyFor?: (command: string) => number;
 }
 
-const PHYSICAL_HEADER = /^7E([0-7])$/;
-// 11-bit and 29-bit functional (broadcast) request headers.
-const FUNCTIONAL_HEADERS = new Set([FUNCTIONAL_REQUEST_HEADER, '18DB33F1']);
 const MASK_BLOCK = 0x20;
 const LAST_MASK_BASE = 0xa0;
-const NO_DATA = 'NO DATA';
+const DEFAULT_PROTOCOL: CanProtocol = '6';
+const HEX_REQUEST = /^([0-9A-F]{2})+$/;
+const NEGATIVE_RESPONSE = 0x7f;
+const NRC_GENERAL_REJECT = 0x10;
+const NRC_SERVICE_NOT_SUPPORTED = 0x11;
+const MIL_BIT = 0x80;
+const MAX_DTC_COUNT = 0x7f;
+const ZERO_READINESS: ReadinessBytes = [0, 0, 0];
 
-// Personas are user-constructible; fail loudly on the one shape the engine
-// cannot serve instead of printing 'undefined' into CAN frames.
-function validatePersona(persona: AdapterPersona): AdapterPersona {
-    if (persona.respondingEcus.length === 0) {
-        throw new Error(`adapter persona "${persona.name}" needs at least one responding ECU`);
+// One ECU as the engine serves it. The engine ECU carries the DTC lists and
+// the whole profile; the others answer their declared subset.
+interface Ecu {
+    id: string;
+    isEngine: boolean;
+    pids: ReadonlySet<number>;
+    readinessSinceClear: ReadinessBytes;
+    readinessThisDriveCycle: ReadinessBytes;
+    dtcReply: 'list' | 'empty' | 'reject' | 'none';
+    info: VehicleInfoSource;
+}
+
+interface Outcome {
+    lines: string[];
+    kind: CommandKind;
+    hint: number | null;
+    responders: number;
+    // A protocol search ran for this command (SEARCHING... printed).
+    searched: boolean;
+    // Link settings after the command; respond() applies it.
+    state: LinkState;
+}
+
+function validateEcuProfile(ecu: EcuProfile): EcuProfile {
+    if (!ADDITIONAL_ECU_ID.test(ecu.id)) {
+        throw new Error(`additional ECU id "${ecu.id}" must be 7E9..7EF (7E8 is the engine ECU)`);
     }
-    return persona;
+    return ecu;
 }
 
 export class SimulatorEngine {
@@ -64,7 +96,7 @@ export class SimulatorEngine {
     private readonly startedAt: number;
     private readonly logger: SimulatorLogger;
     private readonly latencyFor: ((command: string) => number) | null;
-    private readonly supportedPids: Set<number>;
+    private readonly ecus: readonly Ecu[];
     private readonly monitorMids: Set<number>;
     private persona: AdapterPersona;
     private link: LinkState;
@@ -83,11 +115,9 @@ export class SimulatorEngine {
         this.startedAt = this.now();
         this.logger = options.logger ?? {};
         this.latencyFor = options.latencyFor ?? null;
-        this.persona = validatePersona(options.adapter ?? DEFAULT_ADAPTER);
+        this.persona = options.adapter ?? DEFAULT_ADAPTER;
         this.link = resetLinkState(this.persona);
-        // Status/readiness PIDs are always served in addition to the
-        // profile's signal set.
-        this.supportedPids = new Set([0x01, 0x41, ...this.profile.pids]);
+        this.ecus = [this.engineEcu(), ...(this.profile.additionalEcus ?? []).map((ecu) => this.additionalEcu(validateEcuProfile(ecu)))];
         this.monitorMids = new Set(this.profile.monitorTests.map((t) => t.mid));
         this.stored = (this.profile.storedDtcs ?? []).map(normalizeDtc);
         this.pending = (this.profile.pendingDtcs ?? []).map(normalizeDtc);
@@ -95,11 +125,48 @@ export class SimulatorEngine {
         if (this.stored.length > 0) this.captureFreezeFrame();
     }
 
+    private engineEcu(): Ecu {
+        const profile = this.profile;
+        const performance = {infotype: profile.ignition === 'spark' ? 0x08 : 0x0b, counters: profile.performanceCounters};
+        return {
+            id: ENGINE_ECU_ID,
+            isEngine: true,
+            // Status/readiness PIDs are always served in addition to the signal set.
+            pids: new Set([0x01, 0x41, ...profile.pids]),
+            readinessSinceClear: profile.readinessSinceClear,
+            readinessThisDriveCycle: profile.readinessThisDriveCycle,
+            dtcReply: 'list',
+            info: {
+                id: ENGINE_ECU_ID,
+                vin: profile.vin,
+                calibrationId: profile.calibrationId,
+                cvn: profile.cvn,
+                performance,
+                name: profile.ecuName,
+            },
+        };
+    }
+
+    private additionalEcu(ecu: EcuProfile): Ecu {
+        const readiness = ecu.readiness ?? ZERO_READINESS;
+        return {
+            id: ecu.id,
+            isEngine: false,
+            // Status PIDs come with mode 01; an ECU without any signal PID
+            // (a module that only rejects DTC requests) stays silent on 01.
+            pids: new Set(ecu.pids.length > 0 ? [0x01, 0x41, ...ecu.pids] : []),
+            readinessSinceClear: readiness,
+            readinessThisDriveCycle: readiness,
+            dtcReply: ecu.dtcReply ?? 'empty',
+            info: {id: ecu.id, calibrationId: ecu.calibrationId, cvn: ecu.cvn, name: ecu.name},
+        };
+    }
+
     get adapter(): AdapterPersona {
         return this.persona;
     }
 
-    // Snapshot of the AT-level settings (echo, headers, ATST, ...).
+    // Snapshot of the AT-level settings (echo, headers, spaces, ATST, ...).
     get linkState(): Readonly<LinkState> {
         return this.link;
     }
@@ -107,7 +174,7 @@ export class SimulatorEngine {
     // Swaps the adapter persona without resetting link settings — the
     // "same clone, different day" scenario. ATZ applies the new defaults.
     setAdapter(persona: AdapterPersona): void {
-        this.persona = validatePersona(persona);
+        this.persona = persona;
         this.logger.info?.(`adapter persona → ${persona.name}`);
     }
 
@@ -130,234 +197,271 @@ export class SimulatorEngine {
         return this.stored;
     }
 
-    // Handles one full command and returns the payload the adapter would
-    // print (without the trailing '>' prompt — the transport appends that).
+    // Handles one full command and returns the printed lines joined with the
+    // link's line ending (without the blank line + '>' prompt).
     handleCommand(rawCommand: string): string {
         return this.execute(rawCommand).response;
     }
 
-    // Same, plus the latency model: how long the adapter would have taken
-    // before printing. When echo is on (before ATE0) the command itself is
-    // prefixed, exactly like real hardware.
+    // Wraps text the way the adapter prints a response: blank line + prompt,
+    // with the current line ending. Transports use it for their own output.
+    wireFor(text: string): string {
+        const eol = this.eol();
+        return `${text}${eol}${eol}>`;
+    }
+
+    // Same as handleCommand, plus the exact wire bytes and the latency model.
+    // When echo is on (before ATE0) the command is echoed as typed, exactly
+    // like real hardware.
     execute(rawCommand: string): CommandResult {
         // Real ELM327s ignore whitespace inside commands ('010C 1' ≡ '010C1').
         const command = rawCommand.replace(/\s+/g, '').toUpperCase();
-        const echoWasEnabled = this.link.echo;
+        const echo = this.link.echo ? rawCommand.replace(/[\r\n]/g, '') : null;
         const outcome = this.respond(command);
+        const latency = this.latencyOf(command, outcome);
+        const eol = this.eol();
+        const response = [...(echo === null ? [] : [echo]), ...outcome.lines].join(eol);
+        this.logger.debug?.(`${command} -> ${outcome.lines.join('|')} (+${latency.totalMs}ms)`);
+        return {command, response, wire: this.wireFor(response), latency};
+    }
+
+    private eol(): string {
+        return this.link.linefeeds ? '\r\n' : '\r';
+    }
+
+    private latencyOf(command: string, outcome: Outcome): CommandResult['latency'] {
         const waitMs = waitMsFor(outcome, this.link, this.persona);
+        const searchMs = outcome.searched ? (this.persona.protocolSearchMs ?? 0) : 0;
         const baseMs = this.latencyFor ? this.latencyFor(command) : this.persona.baseLatencyMs;
         const jitterMs =
             this.latencyFor || this.persona.latencyJitterMs === 0 ? 0 : Math.round(this.jitter(this.persona.latencyJitterMs));
-        const latency = {baseMs, jitterMs, waitMs, totalMs: Math.max(0, baseMs + jitterMs + waitMs)};
-        const response = echoWasEnabled ? `${command}\r${outcome.text}` : outcome.text;
-        this.logger.debug?.(`${command} -> ${outcome.text} (+${latency.totalMs}ms)`);
-        return {command, response, latency};
+        return {baseMs, jitterMs, waitMs, searchMs, totalMs: Math.max(0, baseMs + jitterMs + waitMs + searchMs)};
     }
 
-    private respond(command: string): {text: string; kind: CommandKind; hint: number | null; responders: number} {
+    // Computes the outcome and applies the link state it carries — the one
+    // place state changes (AT settings, protocol search) land.
+    private respond(command: string): Outcome {
+        const outcome = this.outcomeOf(command);
+        this.link = outcome.state;
+        return outcome;
+    }
+
+    private outcomeOf(command: string): Outcome {
+        const none = {hint: null, responders: 0, searched: false, state: this.link};
         if (command.startsWith('AT')) {
             const at = handleAtCommand(command, {
                 persona: this.persona,
                 state: this.link,
+                vehicleProtocol: this.vehicleProtocol(),
                 voltage: () => this.voltage(),
                 ignitionOn: () => (this.modelValue(0x0c) ?? 0) > 0,
             });
-            this.link = at.state;
-            return {text: at.response, kind: at.response === '?' ? 'unknown' : 'at', hint: null, responders: 0};
+            return {...none, lines: at.lines, kind: at.lines[0] === '?' ? 'unknown' : 'at', state: at.state};
         }
         const st = handleStCommand(command, this.persona);
-        if (st !== null) return {text: st, kind: st === '?' ? 'unknown' : 'at', hint: null, responders: 0};
+        if (st !== null) return {...none, lines: [st], kind: st === '?' ? 'unknown' : 'at'};
 
         // A trailing odd hex digit is the expected-response-count hint.
         const hint = command.length % 2 === 1 ? Number.parseInt(command.slice(-1), 16) : null;
         const request = hint === null ? command : command.slice(0, -1);
-        const responses = this.respondObd(request);
-        if (responses === null) return {text: '?', kind: 'unknown', hint, responders: 0};
-        const addressed = this.addressed(responses);
+        if (!HEX_REQUEST.test(request) || (hint !== null && Number.isNaN(hint))) return {...none, lines: ['?'], kind: 'unknown'};
+        return this.respondObdRequest(request, hint);
+    }
+
+    // Protocol search (auto mode, first request): SEARCHING... precedes the
+    // answer and the search is locked in only once some ECU actually
+    // answered — a probe nobody answers (unknown PID, physical address of a
+    // module that does not exist) prints UNABLE TO CONNECT and searches again
+    // next time, exactly like hardware.
+    private respondObdRequest(request: string, hint: number | null): Outcome {
+        const addressed = this.addressed(this.respondObd(request));
+        const searched = this.link.protocol === AUTO_PROTOCOL && !this.link.searched && this.persona.protocolSearchMs !== null;
+        const preamble = searched ? ['SEARCHING...'] : [];
+        const state = searched && addressed.length > 0 ? {...this.link, searched: true} : this.link;
+        if (searched && addressed.length === 0) {
+            return {lines: [...preamble, 'UNABLE TO CONNECT'], kind: 'obd', hint, responders: 0, searched, state};
+        }
         const truncated =
             this.persona.honorsResponseHint && hint !== null && hint < addressed.length ? addressed.slice(0, hint) : addressed;
-        const text =
+        const lines =
             truncated.length === 0
-                ? NO_DATA
-                : formatResponses(truncated, {
+                ? ['NO DATA']
+                : formatLines(truncated, {
                       headers: this.link.headers,
+                      spaces: this.link.spaces,
+                      extended: isExtended(this.effectiveProtocol()),
                       interleave: !this.persona.batch.multiFrameClean,
                   });
-        return {text, kind: 'obd', hint, responders: addressed.length};
+        return {lines: [...preamble, ...lines], kind: 'obd', hint, responders: addressed.length, searched, state};
     }
 
-    // Applies the request header (ATSH: functional → every ECU, 7E0..7E7 →
-    // that ECU only, anything else → nobody listens) and the receive filter
-    // (ATCRA) to the set of ECUs that answered.
+    private vehicleProtocol(): CanProtocol {
+        return this.profile.protocol ?? DEFAULT_PROTOCOL;
+    }
+
+    // Forced protocol (ATSPx) or, in auto mode, what the vehicle speaks.
+    private effectiveProtocol(): string {
+        return this.link.protocol === AUTO_PROTOCOL ? this.vehicleProtocol() : this.link.protocol;
+    }
+
+    // Applies the request header (ATSH) and receive filter (ATCRA) to the
+    // responses, keeping ECU order.
     private addressed(responses: readonly EcuResponse[]): EcuResponse[] {
-        const header = this.link.requestHeader;
-        const physical = PHYSICAL_HEADER.exec(header);
-        const target = physical ? `7E${(Number.parseInt(physical[1], 16) + 8).toString(16).toUpperCase()}` : null;
-        if (target === null && !FUNCTIONAL_HEADERS.has(header)) return [];
-        return responses.filter(
-            (response) =>
-                (target === null || response.ecu === target) &&
-                (this.link.receiveFilter === null || response.ecu === this.link.receiveFilter),
+        const ids = addressedEcus(
+            this.ecus.map((ecu) => ecu.id),
+            {requestHeader: this.link.requestHeader, receiveFilter: this.link.receiveFilter, extended: isExtended(this.effectiveProtocol())},
         );
+        return responses.filter((response) => ids.includes(response.ecu));
     }
 
-    // null → unknown service ('?'); [] → NO DATA.
-    private respondObd(command: string): EcuResponse[] | null {
-        if (command.startsWith('01')) return this.respondMode01(command.slice(2));
-        const single = this.respondSingleEcu(command);
-        if (single === null) return null;
-        return single === NO_DATA ? [] : [{ecu: this.persona.respondingEcus[0], payload: hexToBytes(single)}];
+    // [] → NO DATA. Services the vehicle does not implement are rejected
+    // with 7F <sid> 11 (service not supported) by every ECU that answers
+    // requests at all, so a physically addressed module rejects too.
+    private respondObd(request: string): EcuResponse[] {
+        const service = request.slice(0, 2);
+        const argument = request.slice(2);
+        switch (service) {
+            case '01':
+                return this.respondMode01(argument);
+            case '02':
+                return this.respondMode02(argument);
+            case '03':
+                return this.respondDtcRead(0x03, this.stored);
+            case '04':
+                return this.respondDtcClear();
+            case '06':
+                return this.respondMode06(argument);
+            case '07':
+                return this.respondDtcRead(0x07, this.pending);
+            case '09':
+                return mode09Responses(
+                    this.ecus.map((ecu) => ecu.info),
+                    argument,
+                );
+            case '0A':
+                if (this.profile.supportsPermanentDtcs === false) return [];
+                return this.respondDtcRead(0x0a, this.permanent);
+            default:
+                return this.ecus
+                    .filter((ecu) => ecu.dtcReply !== 'none')
+                    .map((ecu) => ({ecu: ecu.id, payload: [NEGATIVE_RESPONSE, Number.parseInt(service, 16), NRC_SERVICE_NOT_SUPPORTED]}));
+        }
     }
 
-    private respondSingleEcu(command: string): string | null {
-        if (command === '03') return this.respondDtcRead(0x43, this.stored);
-        if (command === '07') return this.respondDtcRead(0x47, this.pending);
-        if (command === '0A') return this.respondDtcRead(0x4a, this.permanent);
-        if (command === '04') return this.respondDtcClear();
-        if (command.startsWith('02')) return this.respondMode02(command);
-        if (command.startsWith('06')) return this.respondMode06(command);
-        if (command.startsWith('09')) return this.respondMode09(command);
-        return null;
-    }
-
-    // Mode 01: single and batch requests, support-mask queries. The engine
-    // ECU serves the whole profile; further ECUs only their PID subset.
+    // Mode 01: single and batch requests, support-mask queries, one response
+    // per ECU that serves any of the requested PIDs.
     private respondMode01(pidsHex: string): EcuResponse[] {
-        if (pidsHex.length === 0 || pidsHex.length % 2 === 1) return [];
+        if (pidsHex.length === 0) return [];
         const pids = hexToBytes(pidsHex);
         const {batch} = this.persona;
         if (pids.length > 1 && (!batch.supported || pids.length > batch.maxPids)) return [];
-
-        const responses: EcuResponse[] = [];
-        this.persona.respondingEcus.forEach((ecu, index) => {
-            const served = index === 0 ? this.supportedPids : this.secondaryEcuPids();
-            const payload = this.mode01Payload(pids, served);
-            if (payload) responses.push({ecu, payload});
+        return this.ecus.flatMap((ecu) => {
+            const body = pids.flatMap((pid) => {
+                const data = this.mode01Data(ecu, pid);
+                return data ? [pid, ...data] : [];
+            });
+            return body.length > 0 ? [{ecu: ecu.id, payload: [0x41, ...body]}] : [];
         });
-        return responses;
     }
 
-    private secondaryEcuPids(): Set<number> {
-        const subset = this.persona.secondEcuPids ?? [];
-        return new Set(subset.filter((pid) => this.supportedPids.has(pid)));
-    }
-
-    private mode01Payload(pids: readonly number[], served: ReadonlySet<number>): number[] | null {
-        let body: number[] = [];
-        for (const pid of pids) {
-            const data = this.mode01Data(pid, served);
-            if (data) body = [...body, pid, ...data];
+    private mode01Data(ecu: Ecu, pid: number): number[] | null {
+        if (pid % MASK_BLOCK === 0 && pid <= LAST_MASK_BASE) {
+            // An ECU answers a mask block only when it serves a PID beyond
+            // the base — so a module without mode 01 stays silent on 0100.
+            const advertised = [...ecu.pids].some((served) => served > pid);
+            return advertised ? hexToBytes(maskBytesFor(ecu.pids, pid)) : null;
         }
-        return body.length > 0 ? [0x41, ...body] : null;
-    }
-
-    private mode01Data(pid: number, served: ReadonlySet<number>): number[] | null {
-        if (pid % MASK_BLOCK === 0 && pid <= LAST_MASK_BASE) return hexToBytes(maskBytesFor(served, pid));
-        if (!served.has(pid)) return null;
+        if (!ecu.pids.has(pid)) return null;
         if (pid === 0x01) {
-            const count = Math.min(this.stored.length, 0x7f);
-            const [b, c, d] = this.profile.readinessSinceClear;
-            return [count > 0 ? 0x80 | count : 0, b, c, d];
+            const count = ecu.isEngine ? Math.min(this.stored.length, MAX_DTC_COUNT) : 0;
+            const [b, c, d] = ecu.readinessSinceClear;
+            return [count > 0 ? MIL_BIT | count : 0, b, c, d];
         }
         if (pid === 0x41) {
-            const [b, c, d] = this.profile.readinessThisDriveCycle;
+            const [b, c, d] = ecu.readinessThisDriveCycle;
             return [0, b, c, d];
         }
-        return this.encodeCurrentValue(pid);
+        return this.encodeCurrentValue(ecu, pid);
     }
 
     // Requests are '02 <pid> 00'; only frame 0 exists. PID 00 serves the
-    // support mask of the snapshot, PID 02 the DTC that froze the frame.
-    private respondMode02(command: string): string {
-        const snapshot = this.freezeFrame;
-        if (!snapshot || this.stored.length === 0) return NO_DATA;
-        if (command.slice(4, 6) !== '00') return NO_DATA;
-        const pid = Number.parseInt(command.slice(2, 4), 16);
-        if (Number.isNaN(pid)) return NO_DATA;
+    // support mask of the snapshot, PID 02 the DTC that froze the frame
+    // (zeros when none did — from every ECU that keeps a code list).
+    private respondMode02(argument: string): EcuResponse[] {
+        if (argument.length !== 4 || argument.slice(2) !== '00') return [];
+        const pid = Number.parseInt(argument.slice(0, 2), 16);
+        return this.ecus.flatMap((ecu) => {
+            const data = ecu.isEngine ? this.engineFreezeFrameData(pid) : ecu.dtcReply === 'empty' && pid === 0x02 ? [0, 0] : null;
+            return data ? [{ecu: ecu.id, payload: [0x42, pid, 0x00, ...data]}] : [];
+        });
+    }
 
+    private engineFreezeFrameData(pid: number): number[] | null {
+        const snapshot = this.stored.length > 0 ? this.freezeFrame : null;
         if (pid % MASK_BLOCK === 0 && pid <= LAST_MASK_BASE) {
-            const ids = new Set([...snapshot.keys(), 0x02]);
-            return `42${toHex(pid)}00${maskBytesFor(ids, pid)}`;
+            const ids = new Set([...(snapshot?.keys() ?? []), 0x02]);
+            return hexToBytes(maskBytesFor(ids, pid));
         }
         if (pid === 0x02) {
-            const pair = encodeDtc(this.stored[0]);
-            if (!pair) return NO_DATA;
-            return `420200${toHex(pair[0])}${toHex(pair[1])}`;
+            const pair = snapshot ? encodeDtc(this.stored[0]) : null;
+            return pair ? [pair[0], pair[1]] : [0, 0];
         }
-        const data = snapshot.get(pid);
-        if (!data) return NO_DATA;
-        return `42${toHex(pid)}00${data.map(toHex).join('')}`;
+        return snapshot?.get(pid) ?? null;
     }
 
-    // Mode 06 — serves the profile's monitor test records: mask queries from
-    // their MID set, one 9-byte record per (mid, tid) on request.
-    private respondMode06(command: string): string {
-        const mid = Number.parseInt(command.slice(2, 4), 16);
-        if (Number.isNaN(mid)) return NO_DATA;
+    // Mode 06 — the engine ECU serves the profile's monitor test records:
+    // mask queries from their MID set, one 9-byte record per (mid, tid).
+    private respondMode06(argument: string): EcuResponse[] {
+        const mid = Number.parseInt(argument.slice(0, 2), 16);
+        if (argument.length !== 2 || Number.isNaN(mid)) return [];
+        const engine = {ecu: ENGINE_ECU_ID};
         if (mid % MASK_BLOCK === 0 && mid <= LAST_MASK_BASE) {
-            return `46${toHex(mid)}${maskBytesFor(this.monitorMids, mid)}`;
+            return [{...engine, payload: [0x46, mid, ...hexToBytes(maskBytesFor(this.monitorMids, mid))]}];
         }
         const records = this.profile.monitorTests.filter((t) => t.mid === mid);
-        if (records.length === 0) return NO_DATA;
-        const body = records
-            .map(
-                (t) =>
-                    `${toHex(t.mid)}${toHex(t.tid)}${toHex(t.uasId)}` +
-                    `${toHex(Math.floor(t.value / 256))}${toHex(t.value % 256)}` +
-                    `${toHex(Math.floor(t.min / 256))}${toHex(t.min % 256)}` +
-                    `${toHex(Math.floor(t.max / 256))}${toHex(t.max % 256)}`,
-            )
-            .join('');
-        return `46${body}`;
+        if (records.length === 0) return [];
+        const word = (value: number) => [Math.floor(value / 256) & 0xff, value & 0xff];
+        const body = records.flatMap((t) => [t.mid, t.tid, t.uasId, ...word(t.value), ...word(t.min), ...word(t.max)]);
+        return [{...engine, payload: [0x46, ...body]}];
     }
 
-    // Mode 09 — vehicle information; payloads longer than one CAN frame are
-    // framed by the adapter layer (ISO-TP long form or raw frames).
-    private respondMode09(command: string): string {
-        const hex = (bytes: number[]) => bytes.map(toHex).join('');
-        switch (command.slice(2)) {
-            case '02':
-                return hex([0x49, 0x02, 0x01, ...asciiBytes(this.profile.vin)]);
-            case '04':
-                return hex([0x49, 0x04, 0x01, ...asciiBytes(this.profile.calibrationId.padEnd(16, '\0'))]);
-            case '06':
-                return hex([0x49, 0x06, 0x01, ...hexToBytes(this.profile.cvn)]);
-            case '08':
-            case '0B': {
-                const wanted = this.profile.ignition === 'spark' ? '08' : '0B';
-                if (command.slice(2) !== wanted) return NO_DATA;
-                const counters = this.profile.performanceCounters;
-                const bytes = counters.flatMap((value) => [Math.floor(value / 256) & 0xff, value & 0xff]);
-                return hex([0x49, Number.parseInt(wanted, 16), counters.length, ...bytes]);
-            }
-            case '0A':
-                return hex([0x49, 0x0a, 0x01, ...asciiBytes(this.profile.ecuName.padEnd(20, '\0'))]);
-            default:
-                return NO_DATA;
-        }
-    }
-
-    private respondDtcRead(responseHeader: number, codes: readonly string[]): string {
+    // Modes 03/07/0A: the engine ECU lists its codes (count byte, then the
+    // pairs); other ECUs answer per their profile.
+    private respondDtcRead(service: number, codes: readonly string[]): EcuResponse[] {
         const pairs = codes.map(encodeDtc).filter((pair): pair is [number, number] => pair !== null);
-        const body = pairs.map(([a, b]) => `${toHex(a)}${toHex(b)}`).join('');
-        // CAN framing: count byte then the code pairs.
-        return `${toHex(responseHeader)}${toHex(pairs.length)}${body}`;
+        return this.ecus.flatMap((ecu) => {
+            switch (ecu.dtcReply) {
+                case 'list':
+                    return [{ecu: ecu.id, payload: [service + 0x40, pairs.length, ...pairs.flat()]}];
+                case 'empty':
+                    return [{ecu: ecu.id, payload: [service + 0x40, 0]}];
+                case 'reject':
+                    return [{ecu: ecu.id, payload: [NEGATIVE_RESPONSE, service, NRC_GENERAL_REJECT]}];
+                default:
+                    return [];
+            }
+        });
     }
 
     // Mode 04 clears stored + pending codes and the freeze frame; permanent
     // codes survive (only the vehicle erases them after a verified repair).
-    private respondDtcClear(): string {
+    private respondDtcClear(): EcuResponse[] {
         this.stored = [];
         this.pending = [];
         this.freezeFrame = null;
-        return '44';
+        return this.ecus.flatMap((ecu) => {
+            if (ecu.dtcReply === 'none') return [];
+            if (ecu.dtcReply === 'reject') return [{ecu: ecu.id, payload: [NEGATIVE_RESPONSE, 0x04, NRC_GENERAL_REJECT]}];
+            return [{ecu: ecu.id, payload: [0x44]}];
+        });
     }
 
     private captureFreezeFrame(): void {
         if (this.freezeFrame) return;
+        const engine = this.ecus[0];
         const snapshot = new Map<number, number[]>();
         for (const pid of this.profile.pids) {
-            const data = this.encodeCurrentValue(pid);
+            const data = this.encodeCurrentValue(engine, pid);
             if (data) snapshot.set(pid, data);
         }
         this.freezeFrame = snapshot;
@@ -369,8 +473,8 @@ export class SimulatorEngine {
         return `${(base + this.jitter(0.15)).toFixed(1)}V`;
     }
 
-    private encodeCurrentValue(pid: number): number[] | null {
-        if (!this.supportedPids.has(pid)) return null;
+    private encodeCurrentValue(ecu: Ecu, pid: number): number[] | null {
+        if (!ecu.pids.has(pid)) return null;
         const encoder = PID_ENCODERS[pid];
         if (!encoder) return null;
         const value = this.modelValue(pid);
@@ -387,3 +491,6 @@ export class SimulatorEngine {
         return (this.random() * 2 - 1) * amplitude;
     }
 }
+
+// Re-exported for consumers that build expected output by hand.
+export {toHex};

@@ -19,6 +19,31 @@ export interface MonitorTestRecord {
 // monitors, D their incompleteness bits.
 export type ReadinessBytes = readonly [number, number, number];
 
+// ISO 15765-4 variants (ELM327 protocol numbers): 11/29-bit ids at 500/250 kbit.
+export type CanProtocol = '6' | '7' | '8' | '9';
+
+// What an additional ECU (transmission, ABS, ...) answers on the bus. The
+// engine ECU is the profile itself; these are the others that show up as
+// extra response lines on functional requests.
+export interface EcuProfile {
+    // 11-bit CAN response id, 7E9..7EF ('7E9'); on 29-bit vehicles the id
+    // maps to source address 0x10 + 8·n (7E9 → 18DAF118), not configurable.
+    id: string;
+    // Mode 09 infotype 0A. Absent → the ECU does not answer 090A.
+    name?: string;
+    // Mode 01 PIDs this ECU serves (a subset of the vehicle's signal set).
+    pids: readonly number[];
+    // Readiness bytes B/C/D reported on PIDs 01/41; default all zero.
+    readiness?: ReadinessBytes;
+    // Mode 09 infotypes 04 / 06. Absent → the ECU does not answer them.
+    calibrationId?: string;
+    cvn?: string;
+    // Modes 03/07/0A (and freeze frame 02 02): 'empty' → an empty code list,
+    // 'reject' → negative response 7F xx 10, 'none' → stays silent. Default
+    // 'empty'.
+    dtcReply?: 'empty' | 'reject' | 'none';
+}
+
 // Everything that makes the fake vehicle THIS vehicle. Pure data — profiles
 // are JSON-compatible and shippable.
 export interface VehicleProfile {
@@ -42,6 +67,12 @@ export interface VehicleProfile {
     storedDtcs?: readonly string[];
     pendingDtcs?: readonly string[];
     permanentDtcs?: readonly string[];
+    // Bus protocol the adapter detects in auto mode; default '6' (CAN 11/500).
+    protocol?: CanProtocol;
+    // ECUs besides the engine ECU (which always answers as 7E8).
+    additionalEcus?: readonly EcuProfile[];
+    // false → mode 0A answers NO DATA (many pre-2010 vehicles). Default true.
+    supportsPermanentDtcs?: boolean;
 }
 
 // Injectable logging surface; defaults to silence.
@@ -94,10 +125,6 @@ export interface AdapterPersona {
     // '010C 2' → return as soon as 2 responses arrived. false → always wait
     // the full ATST window and print every response.
     honorsResponseHint: boolean;
-    // CAN response ids; the first is the engine ECU serving the whole
-    // profile, the rest serve only secondEcuPids.
-    respondingEcus: readonly string[];
-    secondEcuPids?: readonly number[];
     batch: AdapterBatchCapability;
     // false → ATAT0/1/2 answer OK but do not change the wait window.
     adaptiveTiming: boolean;
@@ -109,6 +136,16 @@ export interface AdapterPersona {
     latencyJitterMs: number;
     // ATST value after reset (hex); ELM327 default is '32' (200 ms).
     defaultTimeoutHex?: string;
+    // Spaces between bytes after reset (ATS). Real hardware defaults to on;
+    // the ideal default persona keeps them off for app-friendly output.
+    defaultSpaces: boolean;
+    // Time a protocol search (first request after reset/ATSP0) costs, with
+    // 'SEARCHING...' printed first. null → never searches.
+    protocolSearchMs: number | null;
+    // Junk some clones print in front of the reset banner ('OK' → 'OKELM327 v2.1').
+    bannerPrefix?: string;
+    // Blank line before the reset banner (genuine behaviour). Default true.
+    bannerBlankLine?: boolean;
 }
 
 export type AdaptiveTimingMode = 0 | 1 | 2;
@@ -117,6 +154,12 @@ export type AdaptiveTimingMode = 0 | 1 | 2;
 export interface LinkState {
     echo: boolean;
     headers: boolean;
+    // ATS — spaces between printed bytes.
+    spaces: boolean;
+    // ATL — '\r\n' instead of '\r' line endings.
+    linefeeds: boolean;
+    // Protocol search already done (auto mode); cleared by reset/ATSP/ATPC.
+    searched: boolean;
     // ATST hh — wait window = hh × 4 ms.
     timeoutHex: string;
     adaptiveTiming: AdaptiveTimingMode;
@@ -133,13 +176,18 @@ export interface CommandLatency {
     jitterMs: number;
     // ATST window the adapter sat through before printing.
     waitMs: number;
+    // Protocol search on the first request in auto mode.
+    searchMs: number;
     totalMs: number;
 }
 
 export interface CommandResult {
     // Normalized command (whitespace stripped, upper-cased).
     command: string;
-    // Payload without the trailing '>' prompt, echo included when enabled.
+    // Lines joined with the adapter's line ending, echo included when
+    // enabled, without the blank line + '>' prompt.
     response: string;
+    // Exactly the bytes the adapter prints: response, blank line, prompt.
+    wire: string;
     latency: CommandLatency;
 }

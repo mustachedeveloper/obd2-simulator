@@ -46,6 +46,7 @@ export const PID_ENCODERS: Readonly<Record<number, PidEncoder>> = {
     0x10: {bytes: 2, encode: (v) => word(Math.round(clamp(v, 0, 655.35) * 100))}, // MAF
     0x11: {bytes: 1, encode: pct}, // throttle
     0x12: {bytes: 1, encode: raw1}, // secondary air status
+    0x13: {bytes: 1, encode: raw1}, // O2 sensors present (bitmap)
     0x14: {bytes: 2, encode: o2Voltage}, // O2 S1 voltage
     0x15: {bytes: 2, encode: o2Voltage}, // O2 S2 voltage
     0x1c: {bytes: 1, encode: raw1}, // OBD standard
@@ -68,7 +69,7 @@ export const PID_ENCODERS: Readonly<Record<number, PidEncoder>> = {
     0x3e: {bytes: 2, encode: catTemp}, // catalyst temp B1S2
     0x42: {bytes: 2, encode: (v) => word(Math.round(clamp(v, 0, 65.535) * 1000))}, // module voltage
     0x43: {bytes: 2, encode: (v) => word(Math.round((clamp(v, 0, 200) * 255) / 100))}, // absolute load
-    0x44: {bytes: 4, encode: lambda}, // commanded lambda
+    0x44: {bytes: 2, encode: (v) => word(Math.round(clamp(v, 0, 2) * 32768))}, // commanded lambda (2 bytes, unlike the O2 PIDs)
     0x45: {bytes: 1, encode: pct}, // relative throttle
     0x46: {bytes: 1, encode: temp}, // ambient temp
     0x47: {bytes: 1, encode: pct}, // throttle B
@@ -83,8 +84,10 @@ export const PID_ENCODERS: Readonly<Record<number, PidEncoder>> = {
     0x52: {bytes: 1, encode: pct}, // ethanol
     0x53: {bytes: 2, encode: (v) => word(Math.round(clamp(v, 0, 327) * 200))}, // abs evap pressure
     0x54: {bytes: 2, encode: (v) => word(Math.round(clamp(v, -32767, 32768) + 32767))}, // evap wide
-    0x55: {bytes: 2, encode: (v) => [...fuelTrim(v), 0x00].slice(0, 2)}, // secondary STFT B1
-    0x56: {bytes: 2, encode: (v) => [...fuelTrim(v), 0x00].slice(0, 2)}, // secondary LTFT B1
+    // Secondary O2 trims: J1979 allows a second byte for bank 3, but
+    // single-bank vehicles send one byte (reference wire logs).
+    0x55: {bytes: 1, encode: fuelTrim}, // secondary STFT B1
+    0x56: {bytes: 1, encode: fuelTrim}, // secondary LTFT B1
     0x59: {bytes: 2, encode: (v) => word(Math.round(clamp(v, 0, 655350) / 10))}, // rail abs
     0x5a: {bytes: 1, encode: pct}, // relative pedal
     0x5c: {bytes: 1, encode: temp}, // oil temp

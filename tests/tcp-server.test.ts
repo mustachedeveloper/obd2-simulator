@@ -23,10 +23,10 @@ describe('TCP server', () => {
         await new Promise<void>((resolve) => socket.on('connect', () => resolve()));
         socket.write('ATZ\rATE0\rATST19\r010C 1\rATRV\r');
         await new Promise((resolve) => setTimeout(resolve, 400));
-        const prompts = received.split('\r\n>').filter(Boolean);
-        expect(prompts[0]).toBe('ATZ\rELM327 v2.1');
+        const prompts = received.split('\r\r>').filter(Boolean);
+        expect(prompts[0]).toBe('ATZ\rOKELM327 v2.1');
         expect(prompts[1]).toBe('ATE0\rOK');
-        expect(prompts[3].split('\r')).toHaveLength(2); // clone: both ECUs despite the hint
+        expect(prompts[3]).toMatch(/^SEARCHING\.\.\.\r41 0C /); // auto protocol: the clone searches first, prints spaces
         expect(prompts[4]).toMatch(/V$/);
         socket.destroy();
         await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -54,7 +54,7 @@ describe('TCP server', () => {
         socket.write('A'.repeat(100));
         socket.write('\rATE0\rATI\r');
         await new Promise((resolve) => setTimeout(resolve, 100));
-        const prompts = received.split('\r\n>').filter(Boolean);
+        const prompts = received.split('\r\r>').filter(Boolean);
         expect(prompts[0]).toBe('?');
         expect(prompts[1]).toBe('ATE0\rOK');
         expect(prompts[2]).toBe('ELM327 v1.5');
@@ -73,7 +73,7 @@ describe('TCP server', () => {
             await new Promise((resolve) => setTimeout(resolve, 5));
         }
         await new Promise((resolve) => setTimeout(resolve, 50));
-        const prompts = received.split('\r\n>').filter(Boolean);
+        const prompts = received.split('\r\r>').filter(Boolean);
         expect(prompts).toEqual(['ATE0\rOK', expect.stringMatching(/^410C[0-9A-F]{4}$/)]);
         socket.destroy();
         await new Promise<void>((resolve) => server.close(() => resolve()));

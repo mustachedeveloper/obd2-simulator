@@ -20,7 +20,7 @@ const engineAt = (ms: number, extra: ConstructorParameters<typeof SimulatorEngin
 describe('AT handshake', () => {
     it('answers the init sequence like real hardware, echo included', () => {
         const engine = new SimulatorEngine({now: () => 0});
-        expect(engine.handleCommand('ATZ')).toBe('ATZ\rELM327 v1.5');
+        expect(engine.handleCommand('ATZ')).toBe('ATZ\r\rELM327 v1.5');
         expect(engine.handleCommand('ATE0')).toBe('ATE0\rOK');
         expect(engine.handleCommand('ATL0')).toBe('OK');
         expect(engine.handleCommand('ATSP0')).toBe('OK');
@@ -149,12 +149,14 @@ describe('DTC validation', () => {
 describe('mode 02 freeze frame', () => {
     it('snapshots on injection, serves the freeze DTC and clears on 04', () => {
         const engine = engineAt(0);
-        expect(engine.handleCommand('020200')).toBe('NO DATA');
+        expect(engine.handleCommand('020200')).toBe('4202000000'); // no code froze a frame
+        expect(engine.handleCommand('020D00')).toBe('NO DATA');
         engine.injectDtc('P0301');
         expect(engine.handleCommand('020200')).toBe('4202000301');
         expect(engine.handleCommand('020D00').startsWith('420D00')).toBe(true);
         engine.handleCommand('04');
-        expect(engine.handleCommand('020200')).toBe('NO DATA');
+        expect(engine.handleCommand('020200')).toBe('4202000000');
+        expect(engine.handleCommand('020D00')).toBe('NO DATA');
     });
 });
 
