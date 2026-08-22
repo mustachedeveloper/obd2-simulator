@@ -157,6 +157,50 @@ engine.linkState; // {echo, headers, spaces, linefeeds, searched, timeoutHex, ad
 
 Latency model: `totalMs = base ± jitter + wait + search`, where `wait` is the `ATST` window (`hh × 4 ms`, ELM default `32` = 200 ms) unless the persona honors the response hint and the hint was met, and `search` is charged once per protocol search. A `latencyFor(command)` engine option replaces base + jitter (e.g. with a distribution from a recorded wire log). `MemoryLink` waits the modelled latency and answers strictly in order; `responseDelayMs` / `jitterMs` override base and jitter for deterministic tests (`includeWaitWindow: false` makes `responseDelayMs` the whole delay), and `link.history` records every exchange (`command`, `response`, `latencyMs`). The TCP server applies the same model (`latencyScale: 0` to disable); the CLI takes `--adapter vlinker|clone|genuine|stn`.
 
+## Steering a scenario
+
+Everything mutable can be driven from the test while the app keeps polling:
+
+```ts
+const engine = new SimulatorEngine();
+engine.override(0x05, 120);           // coolant pinned at 120 °C (null → NO DATA); freeze frames capture it
+engine.setIgnition('key-on');         // ECUs awake, engine stopped: RPM 0, 12.4 V; 'off' → every ECU asleep
+engine.injectDtc('P0171', 'pending'); // pendingDtcs / permanentDtcs / removeDtc / clearDtcs
+engine.failNext('BUFFER FULL', 2);    // next two OBD requests print the adapter error
+engine.onCommand((result) => log(result.command, result.latency.totalMs));
+const saved = engine.snapshot();      // JSON: link settings, DTCs, freeze frame, overrides, ignition, faults
+engine.restore(saved);
+
+const link = new MemoryLink(engine);
+link.corruptNext('drop-prompt');      // next response arrives without '>' — exercise the timeout path
+link.corruptNext('truncate');         // …or cut in half, or 'garbage' (noise bytes first)
+link.simulateAdapterReset();          // banner shows up unprompted, settings back to defaults
+```
+
+### Control channel (CLI / TCP)
+
+```sh
+npx obd2-simulator --control 35001
+nc 127.0.0.1 35001
+dtc P0301            → ok 1 engine(s): injected P0301 (stored)
+set 05 120           → ok 1 engine(s): PID 05 = 120
+ignition off         → ok 1 engine(s): ignition off
+fail BUFFER FULL 2   → ok 1 engine(s): next 2 request(s) → BUFFER FULL
+adapter clone · clear dtcs|overrides|faults · status · help
+```
+
+Commands apply to every connected vehicle and are replayed on vehicles created later, so a scenario survives the app reconnecting. Programmatically: `createControlServer({engines})` from `obd2-simulator/node`, fed by `createTcpServer({onEngine})`; `applyControlCommand(line, engines)` is the pure core.
+
+### Personas from your own recordings
+
+```ts
+import {latencyFromWireLog, personaFromWireLog} from 'obd2-simulator';
+
+const rows = ndjson.map((line) => JSON.parse(line)); // {c: 'ATZ', r: '\r\rELM327 v2.3\r\r', d: 197}
+const persona = personaFromWireLog(rows, {name: 'my-dongle'});         // banner, hint handling, spaces, search time, latency
+const engine = new SimulatorEngine({adapter: persona, latencyFor: latencyFromWireLog(rows)}); // per-command medians
+```
+
 ## Determinism
 
 ```ts

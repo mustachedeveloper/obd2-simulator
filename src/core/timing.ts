@@ -19,7 +19,8 @@ export function timeoutWindowMs(state: LinkState, persona: AdapterPersona): numb
     return Math.round(units * TIMEOUT_UNIT_MS * factor);
 }
 
-export type CommandKind = 'at' | 'obd' | 'unknown';
+// 'fault' → an injected adapter error replaced the response (no wait window).
+export type CommandKind = 'at' | 'obd' | 'unknown' | 'fault';
 
 export interface WaitInput {
     kind: CommandKind;

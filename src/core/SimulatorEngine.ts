@@ -1,10 +1,13 @@
 import type {
+    AdapterFault,
     AdapterPersona,
     CanProtocol,
     CommandResult,
     DrivingModel,
     DtcStatus,
     EcuProfile,
+    EngineSnapshot,
+    IgnitionState,
     LinkState,
     ReadinessBytes,
     SimulatorLogger,
@@ -15,7 +18,7 @@ import {mulberry32} from './prng';
 import {PID_ENCODERS, encodeDtc, maskBytesFor, normalizeDtc, toHex} from './j1979';
 import {GASOLINE_PROFILE} from '../profiles/gasoline';
 import {DEFAULT_ADAPTER} from '../adapters/presets';
-import {AUTO_PROTOCOL, handleAtCommand, handleStCommand, resetLinkState} from './at-commands';
+import {AUTO_PROTOCOL, bannerLines, handleAtCommand, handleStCommand, resetLinkState} from './at-commands';
 import {formatLines, hexToBytes, type EcuResponse} from './framing';
 import {ADDITIONAL_ECU_ID, ENGINE_ECU_ID, addressedEcus, isExtended} from './ecus';
 import {mode09Responses, type VehicleInfoSource} from './mode09';
@@ -57,6 +60,63 @@ const NRC_SERVICE_NOT_SUPPORTED = 0x11;
 const MIL_BIT = 0x80;
 const MAX_DTC_COUNT = 0x7f;
 const ZERO_READINESS: ReadinessBytes = [0, 0, 0];
+// Key on, engine off: the moving parts read zero, the battery carries the bus.
+const KEY_ON_VALUES: Readonly<Record<number, number>> = {
+    0x04: 0, 0x0c: 0, 0x0d: 0, 0x10: 0, 0x1f: 0, 0x42: 12.4, 0x43: 0, 0x5e: 0, 0x61: 0, 0x62: 0,
+};
+const VOLTAGE = {off: 12.2, keyOn: 12.4, running: 14.1, cranked: 400};
+const MAX_QUEUED_FAULTS = 1000;
+const IGNITION_STATES: readonly IgnitionState[] = ['off', 'key-on', 'running'];
+const ADAPTER_FAULT_SET: ReadonlySet<string> = new Set(['BUFFER FULL', 'CAN ERROR', 'BUS ERROR', 'DATA ERROR', 'STOPPED', 'UNABLE TO CONNECT', 'NO DATA']);
+
+// Queue sizes for fault injection: a typo must not allocate gigabytes.
+export function checkQueueCount(count: number): number {
+    if (!Number.isInteger(count) || count < 0 || count > MAX_QUEUED_FAULTS) {
+        throw new Error(`count must be an integer in 0-${MAX_QUEUED_FAULTS}, got ${count}`);
+    }
+    return count;
+}
+
+const isPid = (pid: number): boolean => Number.isInteger(pid) && pid >= 0 && pid <= 0xff;
+
+// Snapshots may come from disk or the network: everything is checked
+// before any field of the engine changes, so a bad snapshot leaves it intact.
+function parseSnapshot(snapshot: EngineSnapshot): EngineSnapshot {
+    if (!snapshot || typeof snapshot !== 'object') throw new Error('snapshot must be an object');
+    const {link, overrides, freezeFrame} = snapshot;
+    if (!link || typeof link !== 'object' || typeof link.echo !== 'boolean' || typeof link.protocol !== 'string') {
+        throw new Error('snapshot.link must be a LinkState');
+    }
+    if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) throw new Error('snapshot.overrides must be an object');
+    const parsedOverrides = Object.fromEntries(
+        Object.entries(overrides).map(([pid, value]) => {
+            const key = Number(pid);
+            if (!isPid(key) || (value !== null && !Number.isFinite(value))) throw new Error(`snapshot.overrides: bad entry ${pid} = ${value}`);
+            return [key, value];
+        }),
+    );
+    if (!(IGNITION_STATES as readonly string[]).includes(snapshot.ignition)) throw new Error(`snapshot.ignition: unknown state "${snapshot.ignition}"`);
+    if (!Array.isArray(snapshot.pendingFaults) || snapshot.pendingFaults.some((fault) => !ADAPTER_FAULT_SET.has(fault))) {
+        throw new Error('snapshot.pendingFaults: unknown fault');
+    }
+    if (freezeFrame !== null && (!Array.isArray(freezeFrame) || freezeFrame.some(([pid, data]) => !isPid(pid) || !Array.isArray(data)))) {
+        throw new Error('snapshot.freezeFrame must be null or [pid, bytes][]');
+    }
+    const codes = (list: readonly string[], name: string) => {
+        if (!Array.isArray(list)) throw new Error(`snapshot.${name} must be an array`);
+        return list.map(normalizeDtc);
+    };
+    return {
+        link: {...link},
+        storedDtcs: codes(snapshot.storedDtcs, 'storedDtcs'),
+        pendingDtcs: codes(snapshot.pendingDtcs, 'pendingDtcs'),
+        permanentDtcs: codes(snapshot.permanentDtcs, 'permanentDtcs'),
+        freezeFrame: freezeFrame ? freezeFrame.map(([pid, data]) => [pid, [...data]] as const) : null,
+        overrides: parsedOverrides,
+        ignition: snapshot.ignition,
+        pendingFaults: [...snapshot.pendingFaults],
+    };
+}
 
 // One ECU as the engine serves it. The engine ECU carries the DTC lists and
 // the whole profile; the others answer their declared subset.
@@ -106,6 +166,11 @@ export class SimulatorEngine {
     // Sensor snapshot captured when the first stored DTC appears; served via
     // mode 02 until a mode 04 clear. pid → encoded data bytes.
     private freezeFrame: Map<number, number[]> | null = null;
+    // Scenario controls: pinned PID values, power state, queued adapter errors.
+    private overridesMap = new Map<number, number | null>();
+    private ignitionState: IgnitionState = 'running';
+    private faults: AdapterFault[] = [];
+    private readonly commandListeners = new Set<(result: CommandResult) => void>();
 
     constructor(options: SimulatorEngineOptions = {}) {
         this.profile = options.profile ?? GASOLINE_PROFILE;
@@ -197,6 +262,115 @@ export class SimulatorEngine {
         return this.stored;
     }
 
+    get pendingDtcs(): readonly string[] {
+        return this.pending;
+    }
+
+    get permanentDtcs(): readonly string[] {
+        return this.permanent;
+    }
+
+    // Drops a code from whichever list holds it. Throws on malformed codes.
+    removeDtc(rawCode: string): void {
+        const code = normalizeDtc(rawCode);
+        this.stored = this.stored.filter((c) => c !== code);
+        this.pending = this.pending.filter((c) => c !== code);
+        this.permanent = this.permanent.filter((c) => c !== code);
+        if (this.stored.length === 0) this.freezeFrame = null;
+    }
+
+    // Test-side reset of every list (unlike mode 04, permanent codes go too).
+    clearDtcs(): void {
+        this.stored = [];
+        this.pending = [];
+        this.permanent = [];
+        this.freezeFrame = null;
+    }
+
+    // Pins a mode 01 PID to a physical value (null → NO DATA) regardless of
+    // the driving model; freeze frames capture the pinned value too.
+    override(pid: number, value: number | null): void {
+        if (!isPid(pid)) throw new Error(`override: PID must be an integer in 0-255, got ${pid}`);
+        if (value !== null && !Number.isFinite(value)) throw new Error(`override: value must be a finite number or null, got ${value}`);
+        this.overridesMap = new Map([...this.overridesMap, [pid, value]]);
+    }
+
+    clearOverride(pid: number): void {
+        this.overridesMap = new Map([...this.overridesMap].filter(([key]) => key !== pid));
+    }
+
+    clearOverrides(): void {
+        this.overridesMap = new Map();
+    }
+
+    get overrides(): Readonly<Record<number, number | null>> {
+        return Object.fromEntries(this.overridesMap);
+    }
+
+    // Key off puts every ECU to sleep (NO DATA / UNABLE TO CONNECT); key on
+    // answers with a stopped engine; running is the driving cycle.
+    setIgnition(state: IgnitionState): void {
+        this.ignitionState = state;
+        this.logger.info?.(`ignition → ${state}`);
+    }
+
+    get ignition(): IgnitionState {
+        return this.ignitionState;
+    }
+
+    // Makes the adapter print an error instead of the next `count` OBD
+    // responses (AT commands are unaffected). Faults queue in order.
+    failNext(fault: AdapterFault, count = 1): void {
+        this.faults = [...this.faults, ...new Array<AdapterFault>(checkQueueCount(count)).fill(fault)];
+    }
+
+    clearFaults(): void {
+        this.faults = [];
+    }
+
+    get pendingFaults(): readonly AdapterFault[] {
+        return this.faults;
+    }
+
+    // Power-cycles the adapter: settings back to persona defaults, and the
+    // banner the adapter prints unprompted on the wire.
+    resetAdapter(): string {
+        this.link = resetLinkState(this.persona);
+        return this.wireFor(bannerLines(this.persona).join(this.eol()));
+    }
+
+    // Called after every command with its result; returns the unsubscribe.
+    onCommand(listener: (result: CommandResult) => void): () => void {
+        this.commandListeners.add(listener);
+        return () => this.commandListeners.delete(listener);
+    }
+
+    snapshot(): EngineSnapshot {
+        return {
+            link: {...this.link},
+            storedDtcs: [...this.stored],
+            pendingDtcs: [...this.pending],
+            permanentDtcs: [...this.permanent],
+            freezeFrame: this.freezeFrame ? [...this.freezeFrame].map(([pid, data]) => [pid, [...data]] as const) : null,
+            overrides: this.overrides,
+            ignition: this.ignitionState,
+            pendingFaults: [...this.faults],
+        };
+    }
+
+    // Atomic: a malformed snapshot throws before anything changes.
+    restore(snapshot: EngineSnapshot): void {
+        const parsed = parseSnapshot(snapshot);
+        this.link = parsed.link;
+        this.stored = [...parsed.storedDtcs];
+        this.pending = [...parsed.pendingDtcs];
+        this.permanent = [...parsed.permanentDtcs];
+        this.freezeFrame = parsed.freezeFrame ? new Map(parsed.freezeFrame.map(([pid, data]) => [pid, [...data]])) : null;
+        this.overridesMap = new Map(Object.entries(parsed.overrides).map(([pid, value]) => [Number(pid), value]));
+        this.ignitionState = parsed.ignition;
+        this.faults = [...parsed.pendingFaults];
+    }
+
     // Handles one full command and returns the printed lines joined with the
     // link's line ending (without the blank line + '>' prompt).
     handleCommand(rawCommand: string): string {
@@ -222,7 +396,9 @@ export class SimulatorEngine {
         const eol = this.eol();
         const response = [...(echo === null ? [] : [echo]), ...outcome.lines].join(eol);
         this.logger.debug?.(`${command} -> ${outcome.lines.join('|')} (+${latency.totalMs}ms)`);
-        return {command, response, wire: this.wireFor(response), latency};
+        const result = {command, response, wire: this.wireFor(response), latency};
+        for (const listener of this.commandListeners) listener(result);
+        return result;
     }
 
     private eol(): string {
@@ -254,7 +430,7 @@ export class SimulatorEngine {
                 state: this.link,
                 vehicleProtocol: this.vehicleProtocol(),
                 voltage: () => this.voltage(),
-                ignitionOn: () => (this.modelValue(0x0c) ?? 0) > 0,
+                ignitionOn: () => this.ignitionState !== 'off',
             });
             return {...none, lines: at.lines, kind: at.lines[0] === '?' ? 'unknown' : 'at', state: at.state};
         }
@@ -265,6 +441,11 @@ export class SimulatorEngine {
         const hint = command.length % 2 === 1 ? Number.parseInt(command.slice(-1), 16) : null;
         const request = hint === null ? command : command.slice(0, -1);
         if (!HEX_REQUEST.test(request) || (hint !== null && Number.isNaN(hint))) return {...none, lines: ['?'], kind: 'unknown'};
+        if (this.faults.length > 0) {
+            const [fault, ...rest] = this.faults;
+            this.faults = rest;
+            return {...none, lines: [fault], kind: 'fault', hint};
+        }
         return this.respondObdRequest(request, hint);
     }
 
@@ -318,6 +499,7 @@ export class SimulatorEngine {
     // with 7F <sid> 11 (service not supported) by every ECU that answers
     // requests at all, so a physically addressed module rejects too.
     private respondObd(request: string): EcuResponse[] {
+        if (this.ignitionState === 'off') return [];
         const service = request.slice(0, 2);
         const argument = request.slice(2);
         switch (service) {
@@ -469,7 +651,7 @@ export class SimulatorEngine {
 
     private voltage(): string {
         const rpm = this.modelValue(0x0c) ?? 0;
-        const base = rpm > 400 ? 14.1 : 12.4;
+        const base = this.ignitionState === 'off' ? VOLTAGE.off : rpm > VOLTAGE.cranked ? VOLTAGE.running : VOLTAGE.keyOn;
         return `${(base + this.jitter(0.15)).toFixed(1)}V`;
     }
 
@@ -482,7 +664,13 @@ export class SimulatorEngine {
         return encoder.encode(value);
     }
 
+    // Overrides win, then the power state, then the driving model.
     private modelValue(pid: number): number | null {
+        if (this.overridesMap.has(pid)) return this.overridesMap.get(pid) ?? null;
+        if (this.ignitionState === 'key-on') {
+            if (pid in KEY_ON_VALUES) return KEY_ON_VALUES[pid];
+            return this.model.value(pid, 0, (amplitude) => this.jitter(amplitude));
+        }
         const elapsedSeconds = Math.max(0, (this.now() - this.startedAt) / 1000);
         return this.model.value(pid, elapsedSeconds, (amplitude) => this.jitter(amplitude));
     }

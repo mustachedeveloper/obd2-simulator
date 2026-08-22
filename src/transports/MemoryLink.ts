@@ -1,5 +1,5 @@
 import type {LinkStatus} from '../core/types';
-import {SimulatorEngine} from '../core/SimulatorEngine';
+import {SimulatorEngine, checkQueueCount} from '../core/SimulatorEngine';
 
 // In-process link: the simulator behaving like a connected serial adapter.
 // Platform-agnostic (works in React Native, Node and browsers) — timers are
@@ -23,6 +23,12 @@ export interface MemoryLinkOptions {
     // Oldest history entries are dropped beyond this many.
     historyLimit?: number;
 }
+
+// Ways the next response can be damaged on the wire: the '>' prompt never
+// arrives, only the first half is delivered, or noise bytes precede it.
+export type LinkCorruption = 'drop-prompt' | 'truncate' | 'garbage';
+
+const GARBAGE_PREFIX = '\u00ff\u00ff';
 
 // One exchange as the link saw it; `at` is the wall-clock write time.
 export interface CommandLogEntry {
@@ -58,6 +64,7 @@ export class MemoryLink {
     // Bumped on disconnect so responses still queued behind an in-flight
     // delay notice they belong to a dead session and never emit.
     private session = 0;
+    private corruptions: LinkCorruption[] = [];
 
     constructor(engine: SimulatorEngine, options: MemoryLinkOptions = {}) {
         this.engine = engine;
@@ -80,6 +87,29 @@ export class MemoryLink {
 
     clearHistory(): void {
         this.log = [];
+    }
+
+    // Damages the next `count` responses in order (fault injection for the
+    // consumer's buffering / timeout logic).
+    corruptNext(kind: LinkCorruption, count = 1): void {
+        this.corruptions = [...this.corruptions, ...new Array<LinkCorruption>(checkQueueCount(count)).fill(kind)];
+    }
+
+    get pendingCorruptions(): readonly LinkCorruption[] {
+        return this.corruptions;
+    }
+
+    // The adapter loses power and comes back: settings reset, the banner
+    // shows up on the wire unprompted (after whatever was still queued).
+    simulateAdapterReset(): void {
+        const wire = this.engine.resetAdapter();
+        const session = this.session;
+        this.tail = this.tail.then(
+            () => {
+                if (session === this.session && this.status === 'connected') this.emit(wire);
+            },
+            () => undefined,
+        );
     }
 
     async connect(): Promise<void> {
@@ -111,7 +141,7 @@ export class MemoryLink {
                 (this.includeWaitWindow ? result.latency.waitMs : 0),
         );
         this.record({command: result.command, response: result.response, latencyMs, at: Date.now()});
-        const response = result.wire;
+        const response = this.corrupt(result.wire);
         const session = this.session;
         this.tail = this.tail.then(
             async () => {
@@ -135,6 +165,20 @@ export class MemoryLink {
     onStatusChange(cb: (status: LinkStatus) => void): () => void {
         this.statusListeners.add(cb);
         return () => this.statusListeners.delete(cb);
+    }
+
+    private corrupt(wire: string): string {
+        const [kind, ...rest] = this.corruptions;
+        if (kind === undefined) return wire;
+        this.corruptions = rest;
+        switch (kind) {
+            case 'drop-prompt':
+                return wire.slice(0, -1);
+            case 'truncate':
+                return wire.slice(0, Math.floor(wire.length / 2));
+            default:
+                return `${GARBAGE_PREFIX}${wire}`;
+        }
     }
 
     private record(entry: CommandLogEntry): void {

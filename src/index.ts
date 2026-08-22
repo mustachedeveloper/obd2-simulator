@@ -3,7 +3,7 @@ export type {SimulatorEngineOptions} from './core/SimulatorEngine';
 export {DefaultDrivingModel} from './core/DefaultDrivingModel';
 export type {DefaultDrivingModelOptions} from './core/DefaultDrivingModel';
 export {MemoryLink} from './transports/MemoryLink';
-export type {CommandLogEntry, MemoryLinkOptions} from './transports/MemoryLink';
+export type {CommandLogEntry, LinkCorruption, MemoryLinkOptions} from './transports/MemoryLink';
 export {GASOLINE_PROFILE} from './profiles/gasoline';
 export {DIESEL_PROFILE, dieselDrivingModel} from './profiles/diesel';
 export {REFERENCE_PROFILE} from './profiles/reference';
@@ -17,8 +17,14 @@ export {
     VLINKER_ADAPTER,
 } from './adapters/presets';
 export {ADAPTIVE_TIMING_FACTORS, ELM_DEFAULT_TIMEOUT_HEX} from './core/timing';
+export {ADAPTER_FAULTS} from './core/types';
+export {latencyFromWireLog, personaFromWireLog} from './adapters/wirelog';
+export type {LatencyFromWireLogOptions, PersonaFromWireLogOptions, WireLogEntry} from './adapters/wirelog';
 export type {
     AdapterBatchCapability,
+    AdapterFault,
+    EngineSnapshot,
+    IgnitionState,
     AdapterPersona,
     AdapterStnIdentity,
     AdaptiveTimingMode,

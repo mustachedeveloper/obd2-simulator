@@ -90,6 +90,29 @@ export interface DrivingModel {
 
 export type LinkStatus = 'disconnected' | 'connecting' | 'connected';
 
+// Vehicle power state: key off (every ECU asleep), key on with the engine
+// stopped, or running (the driving cycle).
+export type IgnitionState = 'off' | 'key-on' | 'running';
+
+// Error texts an ELM327 prints instead of a response; injectable per request.
+export type AdapterFault = 'BUFFER FULL' | 'CAN ERROR' | 'BUS ERROR' | 'DATA ERROR' | 'STOPPED' | 'UNABLE TO CONNECT' | 'NO DATA';
+
+export const ADAPTER_FAULTS: readonly AdapterFault[] = ['BUFFER FULL', 'CAN ERROR', 'BUS ERROR', 'DATA ERROR', 'STOPPED', 'UNABLE TO CONNECT', 'NO DATA'];
+
+// Everything mutable about an engine, JSON-compatible (snapshot / restore).
+export interface EngineSnapshot {
+    link: LinkState;
+    storedDtcs: readonly string[];
+    pendingDtcs: readonly string[];
+    permanentDtcs: readonly string[];
+    // [pid, encoded data bytes]; null → no frame captured.
+    freezeFrame: readonly (readonly [number, readonly number[]])[] | null;
+    // pid → physical value, null → NO DATA.
+    overrides: Readonly<Record<number, number | null>>;
+    ignition: IgnitionState;
+    pendingFaults: readonly AdapterFault[];
+}
+
 // ---------------------------------------------------------------------------
 // Adapter persona — what makes the fake ELM327 THIS adapter (identity,
 // quirks, timing). Pure data like VehicleProfile; presets live in

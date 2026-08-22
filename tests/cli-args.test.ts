@@ -5,15 +5,15 @@ describe('CLI argument parsing', () => {
     it('applies the documented defaults', () => {
         expect(parseArgs([])).toEqual({
             kind: 'run',
-            options: {port: 35000, host: '0.0.0.0', profile: 'gasoline', adapter: 'default', dtcs: [], seed: 42},
+            options: {port: 35000, host: '0.0.0.0', profile: 'gasoline', adapter: 'default', dtcs: [], seed: 42, control: null},
         });
     });
 
     it('accepts every option, repeatable --dtc included', () => {
-        const result = parseArgs(['-p', '4000', '--host', '127.0.0.1', '--profile', 'diesel', '--adapter', 'clone', '--dtc', 'p0301', '--dtc', 'P0420', '--seed', '7']);
+        const result = parseArgs(['-p', '4000', '--host', '127.0.0.1', '--profile', 'diesel', '--adapter', 'clone', '--dtc', 'p0301', '--dtc', 'P0420', '--seed', '7', '--control', '4001']);
         expect(result).toEqual({
             kind: 'run',
-            options: {port: 4000, host: '127.0.0.1', profile: 'diesel', adapter: 'clone', dtcs: ['P0301', 'P0420'], seed: 7},
+            options: {port: 4000, host: '127.0.0.1', profile: 'diesel', adapter: 'clone', dtcs: ['P0301', 'P0420'], seed: 7, control: 4001},
         });
     });
 

@@ -4,6 +4,50 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/) (0.x: minor versions may break).
 
+## [0.5.0] - 2026-08-22
+
+Scenario release: everything a test needs to steer the fake vehicle and
+adapter while the app under test is talking to it.
+
+### Added
+
+- Value overrides: `engine.override(pid, value | null)`, `clearOverride`,
+  `clearOverrides`, `engine.overrides` — pin a PID (or make it `NO DATA`)
+  without writing a driving model; freeze frames capture the pinned value.
+- Ignition states: `engine.setIgnition('off' | 'key-on' | 'running')`,
+  `engine.ignition`. Key off puts every ECU to sleep (`NO DATA`, or
+  `SEARCHING...\rUNABLE TO CONNECT` on a searching adapter, `ATIGN OFF`,
+  battery voltage); key on answers with a stopped engine (RPM/speed/load/run
+  time 0, 12.4 V). `ATIGN` now watches the ignition line, not engine RPM.
+- DTC API symmetry: `engine.pendingDtcs`, `engine.permanentDtcs`,
+  `engine.removeDtc(code)`, `engine.clearDtcs()` (test-side reset of every
+  list, unlike mode 04).
+- Adapter fault injection: `engine.failNext('BUFFER FULL' | 'CAN ERROR' |
+  'BUS ERROR' | 'DATA ERROR' | 'STOPPED' | 'UNABLE TO CONNECT' | 'NO DATA',
+  count)`, `clearFaults`, `pendingFaults` — the next OBD requests print the
+  error instead of a response (no wait window; AT commands unaffected).
+- Link fault injection: `link.corruptNext('drop-prompt' | 'truncate' |
+  'garbage', count)` damages the next responses on `MemoryLink`;
+  `link.simulateAdapterReset()` power-cycles the adapter and prints the
+  banner unprompted; `engine.resetAdapter()` underneath.
+- `engine.onCommand(listener)` — every command with its `CommandResult`;
+  `engine.snapshot()` / `engine.restore()` — the whole mutable state as JSON
+  (link settings, DTC lists, freeze frame, overrides, ignition, faults).
+- Control channel: `createControlServer({engines})` (`obd2-simulator/node`)
+  and CLI `--control <port>` — a second TCP port taking `dtc P0301`, `set 05
+  120`, `ignition off`, `fail BUFFER FULL 2`, `adapter clone`, `clear dtcs`,
+  `status`, `help`; the CLI replays successful commands on engines created
+  later so a scenario survives reconnects. `applyControlCommand(line,
+  engines)` is the pure core. `createTcpServer` gained `onEngine`.
+- Validation at every new boundary: `override()` rejects non-finite values
+  and bad PIDs, `failNext()` / `corruptNext()` cap the queue at 1000,
+  `restore()` checks the whole snapshot first and leaves the engine untouched
+  when it throws.
+- Wire-log loaders: `personaFromWireLog(entries, {name, base})` derives
+  banner (+ prefix quirk), hint handling, spaces, protocol search time and
+  base/jitter latency from a `{c, r, d}` recording; `latencyFromWireLog
+  (entries)` replays per-command medians through `latencyFor`.
+
 ## [0.4.0] - 2026-08-22
 
 Protocol-fidelity release, checked line by line against recordings of real
@@ -143,6 +187,7 @@ adapters (`tests/fixtures/wirelog`, replayed by `tests/wirelog-golden.test.ts`).
   in-process `MemoryLink`, Node TCP server and CLI; modes 01/02/03/04/06/07/
   09/0A, gasoline and diesel profiles, deterministic seeded output.
 
+[0.5.0]: https://github.com/mustachedeveloper/obd2-simulator/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/mustachedeveloper/obd2-simulator/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/mustachedeveloper/obd2-simulator/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/mustachedeveloper/obd2-simulator/compare/v0.2.0...v0.3.0

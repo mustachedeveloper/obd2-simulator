@@ -29,6 +29,9 @@ export interface TcpServerOptions {
     // Per-client socket errors (ECONNRESET, ...); the socket is destroyed
     // either way.
     onClientError?: (remote: string, error: Error) => void;
+    // Called with each client's engine; the returned function runs when
+    // that client disconnects (e.g. to keep a registry for a control server).
+    onEngine?: (engine: SimulatorEngine, remote: string) => (() => void) | void;
 }
 
 const DEFAULT_PORT = 35000;
@@ -112,7 +115,10 @@ export function createTcpServer(options: TcpServerOptions = {}): Server {
             options.onClientError?.(remote, error);
             socket.destroy();
         });
-        serveClient(socket, engineFactory(), clientOptions);
+        const engine = engineFactory();
+        const release = options.onEngine?.(engine, remote);
+        if (release) socket.once('close', release);
+        serveClient(socket, engine, clientOptions);
     });
     if (options.onError) server.on('error', options.onError);
 

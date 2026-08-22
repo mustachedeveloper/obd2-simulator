@@ -63,7 +63,7 @@ const say = (text: string, state: LinkState): AtOutcome => ({lines: [text], stat
 
 // Reset banner: genuine parts print a blank line first; some clones glue
 // junk ('OK') in front of the version string instead.
-function bannerLines(persona: AdapterPersona): string[] {
+export function bannerLines(persona: AdapterPersona): string[] {
     const banner = `${persona.bannerPrefix ?? ''}${persona.banner}`;
     return persona.bannerBlankLine ?? true ? ['', banner] : [banner];
 }

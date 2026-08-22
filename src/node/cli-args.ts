@@ -12,6 +12,8 @@ export interface CliOptions {
     adapter: string;
     dtcs: readonly string[];
     seed: number;
+    // Control-channel port; null → no control server.
+    control: number | null;
 }
 
 export type CliParseResult = {kind: 'run'; options: CliOptions} | {kind: 'help'} | {kind: 'error'; message: string};
@@ -23,6 +25,7 @@ export const DEFAULT_CLI_OPTIONS: CliOptions = {
     adapter: 'default',
     dtcs: [],
     seed: 42,
+    control: null,
 };
 
 const ADAPTER_NAMES = Object.keys(ADAPTER_PRESETS).join(' | ');
@@ -36,6 +39,7 @@ export const USAGE = [
     `  --adapter <name>     ${ADAPTER_NAMES} (default default)`,
     '  --dtc <code>         inject a stored DTC, repeatable (e.g. --dtc P0301)',
     `  --seed <n>           jitter seed for reproducible runs (default ${DEFAULT_CLI_OPTIONS.seed})`,
+    '  --control <n>        also listen on this port for steering commands (dtc, set, ignition, fail, ...)',
     '  --help, -h           show this help',
     '',
     'Point any OBD app at this host:port as a WiFi ELM327 adapter.',
@@ -109,6 +113,9 @@ function parse(argv: readonly string[]): CliOptions {
                 break;
             case '--seed':
                 options = {...options, seed: integer(arg, next())};
+                break;
+            case '--control':
+                options = {...options, control: port(arg, next())};
                 break;
             case '--help':
             case '-h':

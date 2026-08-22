@@ -6,6 +6,8 @@ import {REFERENCE_PROFILE} from '../profiles/reference';
 import type {VehicleProfile} from '../core/types';
 import {ADAPTER_PRESETS} from '../adapters/presets';
 import {createTcpServer} from './tcp-server';
+import {createControlServer} from './control-server';
+import {CONTROL_HELP, applyControlCommand} from './control';
 import {USAGE, parseArgs} from './cli-args';
 
 // Tiny hand-rolled CLI (zero dependencies):
@@ -27,9 +29,17 @@ const PROFILES: Record<typeof options.profile, VehicleProfile> = {gasoline: GASO
 const profile = PROFILES[options.profile];
 const adapter = ADAPTER_PRESETS[options.adapter];
 
+const live = new Set<SimulatorEngine>();
+// Successful control commands, replayed on every engine created later so a
+// scenario set up before (or between) app connections still applies.
+let scenario: readonly string[] = [];
 const server = createTcpServer({
     port: options.port,
     host: options.host,
+    onEngine: (engine) => {
+        live.add(engine);
+        return () => live.delete(engine);
+    },
     engineFactory: () => {
         const engine = new SimulatorEngine({
             profile,
@@ -38,6 +48,7 @@ const server = createTcpServer({
             seed: options.seed,
         });
         for (const code of options.dtcs) engine.injectDtc(code);
+        for (const line of scenario) applyControlCommand(line, [engine]);
         return engine;
     },
     onListening: (port) => {
@@ -56,12 +67,31 @@ const server = createTcpServer({
     },
 });
 
+const control =
+    options.control === null
+        ? null
+        : createControlServer({
+              port: options.control,
+              host: options.host,
+              engines: () => [...live],
+              onApplied: (line, reply) => {
+                  if (reply.startsWith('ok ') && !/^(status|help)\b/i.test(line)) scenario = [...scenario, line];
+              },
+              onListening: (port) => console.log(`control channel on ${options.host}:${port} — ${CONTROL_HELP.join(' | ')}`),
+              onClientError: (remote, error) => console.error(`control client ${remote}: ${error.message}`),
+              onError: (error) => {
+                  console.error(`obd2-simulator: control channel: ${error.message}`);
+                  process.exit(1);
+              },
+          });
+
 const SHUTDOWN_GRACE_MS = 500;
 const shutdown = () => {
     console.log('\nobd2-simulator: shutting down');
     // close() waits for clients to hang up; an OBD app polling every 100 ms
     // never will, so exit after a short grace period either way.
     server.close(() => process.exit(0));
+    control?.close();
     setTimeout(() => process.exit(0), SHUTDOWN_GRACE_MS).unref();
 };
 process.once('SIGINT', shutdown);

@@ -82,8 +82,10 @@ describe('AT command recognition', () => {
         const engine = engineWith();
         expect(engine.handleCommand('ATCS')).toBe('T:00 R:00 F:00');
         expect(engine.handleCommand('ATIGN')).toBe('ON');
+        engine.setIgnition('off');
+        expect(engine.handleCommand('ATIGN')).toBe('OFF'); // ATIGN watches the ignition line, not the engine
         const stalled: DrivingModel = {value: () => null};
-        expect(engineWith(undefined, {model: stalled}).handleCommand('ATIGN')).toBe('OFF');
+        expect(engineWith(undefined, {model: stalled}).handleCommand('ATIGN')).toBe('ON');
         expect(engineWith(CLONE_V21_ADAPTER).handleCommand('ATIGN')).toBe('?');
     });
 
