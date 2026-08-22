@@ -45,8 +45,30 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npx tsup
-      - run: node -e "const {SimulatorEngine} = require('./dist/index.cjs'); const e = new SimulatorEngine(); e.handleCommand('ATE0'); const r = e.handleCommand('010C'); if (!/^410C/.test(r)) throw new Error(r); console.log('cjs ok', r)"
-      - run: node --input-type=module -e "import {SimulatorEngine} from './dist/index.js'; import {createTcpServer} from './dist/node/index.js'; const s = createTcpServer({port: 0, host: '127.0.0.1', engineFactory: () => new SimulatorEngine(), onError: (e) => { console.error(e); process.exit(1); }}); s.on('listening', () => { console.log('esm + tcp ok'); s.close(); }); setTimeout(() => { console.error('no listening event'); process.exit(1); }, 5000).unref()"
+      - name: CJS entry on Node 18
+        run: |
+          node -e "
+            const {SimulatorEngine} = require('./dist/index.cjs');
+            const engine = new SimulatorEngine();
+            engine.handleCommand('ATE0');
+            const rpm = engine.handleCommand('010C');
+            if (!/^410C/.test(rpm)) throw new Error(rpm);
+            console.log('cjs ok', rpm);
+          "
+      - name: ESM entry + TCP server on Node 18
+        run: |
+          node --input-type=module -e "
+            import {SimulatorEngine} from './dist/index.js';
+            import {createTcpServer} from './dist/node/index.js';
+            const server = createTcpServer({
+              port: 0,
+              host: '127.0.0.1',
+              engineFactory: () => new SimulatorEngine(),
+              onError: (error) => { console.error(error); process.exit(1); },
+            });
+            server.on('listening', () => { console.log('esm + tcp ok'); server.close(); });
+            setTimeout(() => { console.error('no listening event'); process.exit(1); }, 5000).unref();
+          "
 
   publish:
     # Publishes on version tags (v0.1.0 ...) with npm provenance. The tag must
