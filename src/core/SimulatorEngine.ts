@@ -9,7 +9,7 @@ import type {
 } from './types';
 import {DefaultDrivingModel} from './DefaultDrivingModel';
 import {mulberry32} from './prng';
-import {PID_ENCODERS, asciiBytes, encodeDtc, maskBytesFor, toHex} from './j1979';
+import {PID_ENCODERS, asciiBytes, encodeDtc, maskBytesFor, normalizeDtc, toHex} from './j1979';
 import {GASOLINE_PROFILE} from '../profiles/gasoline';
 import {DEFAULT_ADAPTER} from '../adapters/presets';
 import {FUNCTIONAL_REQUEST_HEADER, handleAtCommand, handleStCommand, resetLinkState} from './at-commands';
@@ -89,9 +89,9 @@ export class SimulatorEngine {
         // profile's signal set.
         this.supportedPids = new Set([0x01, 0x41, ...this.profile.pids]);
         this.monitorMids = new Set(this.profile.monitorTests.map((t) => t.mid));
-        this.stored = [...(this.profile.storedDtcs ?? [])];
-        this.pending = [...(this.profile.pendingDtcs ?? [])];
-        this.permanent = [...(this.profile.permanentDtcs ?? [])];
+        this.stored = (this.profile.storedDtcs ?? []).map(normalizeDtc);
+        this.pending = (this.profile.pendingDtcs ?? []).map(normalizeDtc);
+        this.permanent = (this.profile.permanentDtcs ?? []).map(normalizeDtc);
         if (this.stored.length > 0) this.captureFreezeFrame();
     }
 
@@ -112,8 +112,9 @@ export class SimulatorEngine {
     }
 
     // Plants a fault code at runtime; stored codes also snapshot the freeze
-    // frame the first time one appears.
-    injectDtc(code: string, status: DtcStatus = 'stored'): void {
+    // frame the first time one appears. Throws on malformed codes.
+    injectDtc(rawCode: string, status: DtcStatus = 'stored'): void {
+        const code = normalizeDtc(rawCode);
         const list = status === 'pending' ? this.pending : status === 'permanent' ? this.permanent : this.stored;
         if (list.includes(code)) return;
         if (status === 'pending') this.pending = [...this.pending, code];

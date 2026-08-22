@@ -37,15 +37,17 @@ engine.handleCommand('ATE0');
 engine.handleCommand('0902');   // VIN, ISO-TP framed
 engine.injectDtc('P0301');      // freeze frame snapshots automatically
 engine.handleCommand('03');     // '43010301'
+engine.injectDtc('garbage');    // throws: invalid DTC "garbage" (expected e.g. P0301)
 ```
 
 ## Quick start — fake WiFi adapter (any OBD app)
 
 ```sh
 npx obd2-simulator --port 35000 --profile diesel --dtc P0301
+npx obd2-simulator --host 127.0.0.1 --adapter clone   # local-only, cheap-clone persona
 ```
 
-Point any OBD application (Car Scanner, Torque, your own) at `<host>:35000` as a **WiFi ELM327 adapter** and it will see a live fake vehicle. Each client connection gets its own vehicle instance.
+Point any OBD application (Car Scanner, Torque, your own) at `<host>:35000` as a **WiFi ELM327 adapter** and it will see a live fake vehicle. Each client connection gets its own vehicle instance. The server binds `0.0.0.0` by default (that is the point of impersonating a WiFi dongle) — pass `--host 127.0.0.1` to keep it on your machine. `Ctrl+C` shuts it down.
 
 Programmatic (Node only, via the `obd2-simulator/node` subpath):
 
@@ -53,7 +55,16 @@ Programmatic (Node only, via the `obd2-simulator/node` subpath):
 import {createTcpServer} from 'obd2-simulator/node';
 import {SimulatorEngine} from 'obd2-simulator';
 
-createTcpServer({port: 35000, engineFactory: () => new SimulatorEngine()});
+const server = createTcpServer({
+    port: 35000,
+    host: '127.0.0.1',
+    engineFactory: () => new SimulatorEngine(),
+    latencyScale: 1,                       // 0 → answer immediately
+    maxLineLength: 512,                    // longer lines are discarded and answered with '?'
+    onError: (error) => console.error(error.message),          // EADDRINUSE, EACCES, ...
+    onClientError: (remote, error) => console.warn(remote, error.message),
+});
+// later: server.close()
 ```
 
 ## What is simulated
@@ -132,6 +143,10 @@ new SimulatorEngine({seed: 7, now: () => fakeClock});
 ```
 
 Same seed + same clock → byte-identical output (latency jitter included). `MemoryLink` with `responseDelayMs` + `jitterMs: 0` uses fixed delays so fake timers work.
+
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md).
 
 ## License
 

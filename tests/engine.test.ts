@@ -123,6 +123,29 @@ describe('DTC lifecycle', () => {
     });
 });
 
+describe('DTC validation', () => {
+    it('rejects malformed codes instead of counting them on the MIL', () => {
+        const engine = engineAt(0);
+        expect(() => engine.injectDtc('garbage')).toThrow(/invalid DTC "garbage"/);
+        expect(() => engine.injectDtc('P03011')).toThrow(/invalid DTC/);
+        expect(engine.handleCommand('0101').slice(0, 6)).toBe('410100');
+        expect(engine.handleCommand('03')).toBe('4300');
+    });
+
+    it('normalizes accepted codes to upper case and de-duplicates', () => {
+        const engine = engineAt(0);
+        engine.injectDtc(' p0301 ');
+        engine.injectDtc('P0301');
+        expect(engine.storedDtcs).toEqual(['P0301']);
+        expect(engine.handleCommand('03')).toBe('43010301');
+    });
+
+    it('fails fast on malformed codes in the profile', () => {
+        expect(() => new SimulatorEngine({profile: {...GASOLINE_PROFILE, storedDtcs: ['X0000']}})).toThrow(/invalid DTC "X0000"/);
+        expect(() => new SimulatorEngine({profile: {...GASOLINE_PROFILE, permanentDtcs: ['u0100']}})).not.toThrow();
+    });
+});
+
 describe('mode 02 freeze frame', () => {
     it('snapshots on injection, serves the freeze DTC and clears on 04', () => {
         const engine = engineAt(0);

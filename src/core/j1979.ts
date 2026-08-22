@@ -128,6 +128,15 @@ export function encodeDtc(code: string): [number, number] | null {
     return [(system << 6) | (firstDigit << 4) | (remaining >> 8), remaining & 0xff];
 }
 
+// Trimmed, upper-cased code, or throws for anything encodeDtc cannot serve.
+// Used at the boundaries (profile, injectDtc, CLI) so a typo never ends up
+// counted on the MIL while mode 03 prints nothing.
+export function normalizeDtc(code: string): string {
+    const normalized = code.trim().toUpperCase();
+    if (!encodeDtc(normalized)) throw new Error(`invalid DTC "${code}" (expected e.g. P0301)`);
+    return normalized;
+}
+
 // Builds the 4-byte support-mask hex for one base block (0x00, 0x20, ...)
 // from a set of ids; the last bit advertises the next block when needed.
 export function maskBytesFor(ids: ReadonlySet<number>, baseId: number): string {

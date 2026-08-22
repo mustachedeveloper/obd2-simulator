@@ -31,4 +31,72 @@ describe('TCP server', () => {
         socket.destroy();
         await new Promise<void>((resolve) => server.close(() => resolve()));
     });
+
+    it('reports a listen failure through onError instead of crashing', async () => {
+        const {server, port} = await listen({});
+        const error = await new Promise<Error>((resolve) => {
+            createTcpServer({port, host: '127.0.0.1', onError: resolve});
+        });
+        expect((error as NodeJS.ErrnoException).code).toBe('EADDRINUSE');
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    it('discards an oversized line, answers ? and keeps serving', async () => {
+        const {server, port} = await listen({
+            engineFactory: () => new SimulatorEngine({now: () => 0}),
+            latencyScale: 0,
+            maxLineLength: 32,
+        });
+        const socket = createConnection({port, host: '127.0.0.1'});
+        let received = '';
+        socket.on('data', (chunk) => (received += chunk.toString('ascii')));
+        await new Promise<void>((resolve) => socket.on('connect', () => resolve()));
+        socket.write('A'.repeat(100));
+        socket.write('\rATE0\rATI\r');
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const prompts = received.split('\r\n>').filter(Boolean);
+        expect(prompts[0]).toBe('?');
+        expect(prompts[1]).toBe('ATE0\rOK');
+        expect(prompts[2]).toBe('ELM327 v1.5');
+        socket.destroy();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    it('reassembles a command that arrives in pieces', async () => {
+        const {server, port} = await listen({engineFactory: () => new SimulatorEngine({now: () => 0}), latencyScale: 0});
+        const socket = createConnection({port, host: '127.0.0.1'});
+        let received = '';
+        socket.on('data', (chunk) => (received += chunk.toString('ascii')));
+        await new Promise<void>((resolve) => socket.on('connect', () => resolve()));
+        for (const piece of ['AT', 'E0\r01', '0C', '\r']) {
+            socket.write(piece);
+            await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const prompts = received.split('\r\n>').filter(Boolean);
+        expect(prompts).toEqual(['ATE0\rOK', expect.stringMatching(/^410C[0-9A-F]{4}$/)]);
+        socket.destroy();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    it('reports client socket errors through onClientError', async () => {
+        const errors: string[] = [];
+        const {server, port} = await listen({
+            engineFactory: () => new SimulatorEngine({now: () => 0}),
+            onClientError: (remote, error) => errors.push(`${remote.split(':')[0]} ${(error as NodeJS.ErrnoException).code}`),
+        });
+        const socket = createConnection({port, host: '127.0.0.1'});
+        await new Promise<void>((resolve) => socket.on('connect', () => resolve()));
+        await new Promise((resolve) => setTimeout(resolve, 20)); // let the server accept before the RST
+        socket.write('010C\r');
+        socket.resetAndDestroy(); // RST instead of FIN → ECONNRESET on the server side
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(errors).toEqual(['127.0.0.1 ECONNRESET']);
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    it('rejects nonsensical server options up front', () => {
+        expect(() => createTcpServer({maxLineLength: 0})).toThrow(/maxLineLength/);
+        expect(() => createTcpServer({latencyScale: -1})).toThrow(/latencyScale/);
+    });
 });

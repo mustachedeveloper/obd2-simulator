@@ -1,30 +1,58 @@
 {
     "name": "obd2-simulator",
-    "version": "0.3.0",
+    "version": "0.3.1",
     "description": "Zero-dependency ELM327 / OBD-II vehicle simulator — a fake car for testing diagnostic apps. In-process link for React Native/browser tests, TCP server that impersonates a WiFi ELM327 adapter for any OBD app.",
     "license": "MIT",
     "author": "Emre Yıldız <mh.emreyildiz@gmail.com>",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/mustachedeveloper/obd2-simulator.git"
+    },
+    "homepage": "https://github.com/mustachedeveloper/obd2-simulator#readme",
+    "bugs": {
+        "url": "https://github.com/mustachedeveloper/obd2-simulator/issues"
+    },
     "type": "module",
     "main": "./dist/index.cjs",
     "module": "./dist/index.js",
     "types": "./dist/index.d.ts",
     "exports": {
         ".": {
-            "types": "./dist/index.d.ts",
-            "import": "./dist/index.js",
-            "require": "./dist/index.cjs"
+            "import": {
+                "types": "./dist/index.d.ts",
+                "default": "./dist/index.js"
+            },
+            "require": {
+                "types": "./dist/index.d.cts",
+                "default": "./dist/index.cjs"
+            }
         },
         "./node": {
-            "types": "./dist/node/index.d.ts",
-            "import": "./dist/node/index.js",
-            "require": "./dist/node/index.cjs"
+            "import": {
+                "types": "./dist/node/index.d.ts",
+                "default": "./dist/node/index.js"
+            },
+            "require": {
+                "types": "./dist/node/index.d.cts",
+                "default": "./dist/node/index.cjs"
+            }
+        },
+        "./package.json": "./package.json"
+    },
+    "typesVersions": {
+        "*": {
+            "node": [
+                "./dist/node/index.d.ts"
+            ]
         }
     },
     "bin": {
         "obd2-simulator": "./dist/node/cli.js"
     },
     "files": [
-        "dist"
+        "dist",
+        "!dist/node/cli.cjs",
+        "!dist/node/cli.cjs.map"
     ],
     "sideEffects": false,
     "engines": {
@@ -35,7 +63,8 @@
         "test": "vitest run",
         "test:watch": "vitest",
         "typecheck": "tsc --noEmit",
-        "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+        "prepublishOnly": "npm run typecheck && npm run test && npm run build",
+        "test:coverage": "vitest run --coverage"
     },
     "keywords": [
         "obd2",
@@ -52,9 +81,10 @@
         "testing"
     ],
     "devDependencies": {
-        "@types/node": "^26.2.0",
-        "tsup": "^8.3.5",
-        "typescript": "^5.7.2",
-        "vitest": "^2.1.8"
+        "@types/node": "^20.19.0",
+        "@vitest/coverage-v8": "^4.1.11",
+        "tsup": "^8.5.1",
+        "typescript": "^5.9.3",
+        "vitest": "^4.1.11"
     }
 }
