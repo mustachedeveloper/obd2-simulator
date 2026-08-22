@@ -122,6 +122,7 @@ new SimulatorEngine({
 |---------|---------|
 | `GASOLINE_PROFILE` | Spark-ignition passenger car, one ECU, CAN 11/500, broad PID set |
 | `DIESEL_PROFILE` | Compression-ignition car with the diesel pack (turbo, EGT, DPF, NOx, DEF) |
+| `HYBRID_PROFILE` | Gasoline hybrid: spark-ignition set + battery pack (`0x5B`), fuel type hybrid, engine off at standstill (`hybridDrivingModel()`) |
 | `REFERENCE_PROFILE` | 2011 Škoda on CAN 29/500: engine + transmission ECU + a module rejecting DTC requests, no mode 0A — matches the wire-log recordings |
 
 Custom driving behavior is one interface away:
@@ -213,6 +214,10 @@ new SimulatorEngine({seed: 7, now: () => fakeClock});
 ```
 
 Same seed + same clock → byte-identical output (latency jitter included). `MemoryLink` with `responseDelayMs` + `jitterMs: 0` uses fixed delays so fake timers work.
+
+## Stability & versioning
+
+1.0 follows semantic versioning. The exported names of `obd2-simulator` and `obd2-simulator/node`, the `VehicleProfile` / `AdapterPersona` / `EngineSnapshot` shapes, the control-channel protocol and the CLI flags only change with a major version. `tests/api-surface.test.ts` guards the exported names, the engine's public members and (at type level, via `npm run typecheck`) the fields of those three shapes. Wire output can still get *more* faithful in a minor version when a recording proves hardware behaves differently — every such change is listed in the [changelog](./CHANGELOG.md). API reference: `npm run docs` (typedoc, published to GitHub Pages on releases).
 
 ## Known limitations
 

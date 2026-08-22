@@ -1,6 +1,6 @@
 {
     "name": "obd2-simulator",
-    "version": "0.5.0",
+    "version": "1.0.0",
     "description": "Zero-dependency ELM327 / OBD-II vehicle simulator — a fake car for testing diagnostic apps. In-process link for React Native/browser tests, TCP server that impersonates a WiFi ELM327 adapter for any OBD app.",
     "license": "MIT",
     "author": "Emre Yıldız <mh.emreyildiz@gmail.com>",
@@ -67,7 +67,8 @@
         "lint": "biome check .",
         "format": "biome check --write .",
         "check": "npm run lint && npm run typecheck && npm run test:coverage",
-        "prepublishOnly": "npm run check && npm run build"
+        "prepublishOnly": "npm run check && npm run build",
+        "docs": "typedoc"
     },
     "keywords": [
         "obd2",
@@ -88,6 +89,7 @@
         "@types/node": "^20.19.0",
         "@vitest/coverage-v8": "^4.1.11",
         "tsup": "^8.5.1",
+        "typedoc": "^0.28.20",
         "typescript": "^5.9.3",
         "vitest": "^4.1.11"
     }

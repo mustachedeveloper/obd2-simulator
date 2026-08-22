@@ -29,7 +29,7 @@ const egtWord = (value: number): number[] => word(Math.round(clamp((value + 40) 
 // simulator with a new PID = one row here + a driving-model signal. Packet
 // PIDs (0x64+) receive ONE primary physical value and synthesize their
 // secondary sensor fields from it (a simulator, not a twin).
-export const PID_ENCODERS: Readonly<Record<number, PidEncoder>> = {
+const ENCODER_TABLE: Record<number, PidEncoder> = {
     0x03: {bytes: 2, encode: (v) => [Math.round(clamp(v, 0, 16)), 0]}, // fuel system status
     0x04: {bytes: 1, encode: pct}, // engine load
     0x05: {bytes: 1, encode: temp}, // coolant temp
@@ -90,6 +90,7 @@ export const PID_ENCODERS: Readonly<Record<number, PidEncoder>> = {
     0x56: {bytes: 1, encode: fuelTrim}, // secondary LTFT B1
     0x59: {bytes: 2, encode: (v) => word(Math.round(clamp(v, 0, 655350) / 10))}, // rail abs
     0x5a: {bytes: 1, encode: pct}, // relative pedal
+    0x5b: {bytes: 1, encode: pct}, // hybrid battery pack remaining life
     0x5c: {bytes: 1, encode: temp}, // oil temp
     0x5d: {bytes: 2, encode: (v) => word(Math.round(clamp((v + 210) * 128, 0, 65535)))}, // injection timing
     0x5e: {bytes: 2, encode: (v) => word(Math.round(clamp(v, 0, 3276.75) * 20))}, // fuel rate
@@ -139,6 +140,14 @@ export const PID_ENCODERS: Readonly<Record<number, PidEncoder>> = {
         },
     }, // odometer
 };
+
+/**
+ * The encoder table, deep-frozen: a test that stubs an entry would otherwise
+ * poison every engine in the process (the table is a module-level singleton).
+ */
+export const PID_ENCODERS: Readonly<Record<number, Readonly<PidEncoder>>> = Object.freeze(
+    Object.fromEntries(Object.entries(ENCODER_TABLE).map(([pid, encoder]) => [pid, Object.freeze(encoder)])),
+);
 
 const DTC_SYSTEM_LETTERS = ['P', 'C', 'B', 'U'] as const;
 

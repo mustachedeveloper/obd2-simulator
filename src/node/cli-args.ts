@@ -8,7 +8,7 @@ import {normalizeDtc} from '../core/j1979';
 export interface CliOptions {
     port: number;
     host: string;
-    profile: 'gasoline' | 'diesel' | 'reference';
+    profile: 'gasoline' | 'diesel' | 'reference' | 'hybrid';
     adapter: string;
     dtcs: readonly string[];
     seed: number;
@@ -35,7 +35,7 @@ export const USAGE = [
     '',
     `  --port, -p <n>       TCP port to listen on (default ${DEFAULT_CLI_OPTIONS.port})`,
     `  --host <address>     interface to bind (default ${DEFAULT_CLI_OPTIONS.host}; 127.0.0.1 for local-only)`,
-    '  --profile <name>     gasoline | diesel | reference (default gasoline; reference = 2-ECU CAN 29-bit car)',
+    '  --profile <name>     gasoline | diesel | hybrid | reference (default gasoline; reference = 2-ECU CAN 29-bit car)',
     `  --adapter <name>     ${ADAPTER_NAMES} (default default)`,
     '  --dtc <code>         inject a stored DTC, repeatable (e.g. --dtc P0301)',
     `  --seed <n>           jitter seed for reproducible runs (default ${DEFAULT_CLI_OPTIONS.seed})`,
@@ -65,10 +65,11 @@ const port = (flag: string, value: string | undefined): number => {
     return parsed >= 0 && parsed <= MAX_PORT ? parsed : fail(`${flag} expects a port in 0-${MAX_PORT}, got ${parsed}`);
 };
 
+const PROFILES: readonly CliOptions['profile'][] = ['gasoline', 'diesel', 'reference', 'hybrid'];
 const profile = (value: string | undefined): CliOptions['profile'] =>
-    value === 'gasoline' || value === 'diesel' || value === 'reference'
-        ? value
-        : fail(`--profile expects gasoline | diesel | reference, got "${value ?? ''}"`);
+    (PROFILES as readonly string[]).includes(value ?? '')
+        ? (value as CliOptions['profile'])
+        : fail(`--profile expects ${PROFILES.join(' | ')}, got "${value ?? ''}"`);
 
 const adapter = (value: string | undefined): string =>
     value !== undefined && value in ADAPTER_PRESETS ? value : fail(`--adapter expects ${ADAPTER_NAMES}, got "${value ?? ''}"`);

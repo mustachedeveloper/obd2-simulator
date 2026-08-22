@@ -56,6 +56,16 @@ describe('PID encoders', () => {
         }
     });
 
+    it('is frozen — a test that stubs an encoder cannot poison other engines', () => {
+        const table = PID_ENCODERS as Record<number, {encode: unknown}>;
+        expect(() => {
+            table[0x0d] = {encode: () => [0]};
+        }).toThrow();
+        expect(() => {
+            (table[0x0d] as {encode: unknown}).encode = () => [0];
+        }).toThrow();
+    });
+
     it('formats bytes as two upper-case hex digits', () => {
         expect(toHex(0)).toBe('00');
         expect(toHex(10)).toBe('0A');

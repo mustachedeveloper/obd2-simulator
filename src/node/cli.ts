@@ -3,7 +3,8 @@ import {SimulatorEngine} from '../core/SimulatorEngine';
 import {GASOLINE_PROFILE} from '../profiles/gasoline';
 import {DIESEL_PROFILE, dieselDrivingModel} from '../profiles/diesel';
 import {REFERENCE_PROFILE} from '../profiles/reference';
-import type {VehicleProfile} from '../core/types';
+import {HYBRID_PROFILE, hybridDrivingModel} from '../profiles/hybrid';
+import type {DrivingModel, VehicleProfile} from '../core/types';
 import {ADAPTER_PRESETS, DEFAULT_ADAPTER} from '../adapters/presets';
 import {createTcpServer} from './tcp-server';
 import {createControlServer} from './control-server';
@@ -29,6 +30,11 @@ const PROFILES: Record<typeof options.profile, VehicleProfile> = {
     gasoline: GASOLINE_PROFILE,
     diesel: DIESEL_PROFILE,
     reference: REFERENCE_PROFILE,
+    hybrid: HYBRID_PROFILE,
+};
+const MODELS: Partial<Record<typeof options.profile, () => DrivingModel>> = {
+    diesel: dieselDrivingModel,
+    hybrid: hybridDrivingModel,
 };
 const profile = PROFILES[options.profile];
 const adapter = ADAPTER_PRESETS[options.adapter] ?? DEFAULT_ADAPTER;
@@ -47,7 +53,7 @@ const server = createTcpServer({
     engineFactory: () => {
         const engine = new SimulatorEngine({
             profile,
-            model: options.profile === 'diesel' ? dieselDrivingModel() : undefined,
+            model: MODELS[options.profile]?.(),
             adapter,
             seed: options.seed,
         });

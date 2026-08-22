@@ -46,7 +46,23 @@ export interface DefaultDrivingModelOptions {
      * Odometer reading at power-on (PID 0xA6 accumulates on top).
      */
     odometerKm?: number;
+    /**
+     * Hybrid behaviour: the combustion engine stops while the car stands
+     * still (rpm, load, airflow, fuel rate 0; manifold at atmospheric;
+     * battery voltage instead of alternator voltage).
+     */
+    engineOffAtStandstill?: boolean;
 }
+
+// What the engine-derived sensors read with the combustion engine stopped.
+const ENGINE_OFF_VALUES: Readonly<Record<number, number>> = {
+    0x0b: 101, // manifold pressure: atmospheric, no vacuum
+    0x0e: 0, // timing advance
+    0x10: 0, // MAF
+    0x42: 12.4, // module voltage: battery, no alternator
+    0x5e: 0, // fuel rate
+    0x66: 0, // MAF sensors
+};
 
 // Distance driven since power-on: piecewise integral of the speed profile.
 // One full 96s cycle covers 0.1 (accel) + 1.5 (cruise) + 0.1 (decel) km.
@@ -76,15 +92,19 @@ function distanceKm(elapsedSeconds: number): number {
 export class DefaultDrivingModel implements DrivingModel {
     private readonly fuelType: number;
     private readonly odometerKm: number;
+    private readonly engineOffAtStandstill: boolean;
 
     constructor(options: DefaultDrivingModelOptions = {}) {
         this.fuelType = options.fuelType ?? 1;
         this.odometerKm = options.odometerKm ?? 84_213;
+        this.engineOffAtStandstill = options.engineOffAtStandstill ?? false;
     }
 
     value(pid: number, elapsedSeconds: number, jitter: (amplitude: number) => number): number | null {
         const state = this.drivingState(elapsedSeconds, jitter);
         const warmup = 1 - Math.exp(-elapsedSeconds / COOLANT_WARMUP_TAU_S);
+        const engineOff = state.rpm === 0 ? ENGINE_OFF_VALUES[pid] : undefined;
+        if (engineOff !== undefined) return engineOff;
         switch (pid) {
             case 0x03:
                 // Open loop while warming up, closed loop after.
@@ -289,6 +309,7 @@ export class DefaultDrivingModel implements DrivingModel {
             throttle = 5;
         }
 
+        if (speed < 1 && this.engineOffAtStandstill) return {speedKmh: 0, rpm: 0, throttlePct: 0, engineLoadPct: 0};
         const rpm = speed < 1 ? IDLE_RPM + jitter(40) : IDLE_RPM + speed * gearFactor(speed);
         return {
             speedKmh: clamp(speed, 0, 240),

@@ -7,6 +7,9 @@ export type {CommandLogEntry, LinkCorruption, MemoryLinkOptions} from './transpo
 export {GASOLINE_PROFILE} from './profiles/gasoline';
 export {DIESEL_PROFILE, dieselDrivingModel} from './profiles/diesel';
 export {REFERENCE_PROFILE} from './profiles/reference';
+export {HYBRID_PROFILE, hybridDrivingModel} from './profiles/hybrid';
+export {PID_ENCODERS, encodeDtc, normalizeDtc} from './core/j1979';
+export type {PidEncoder} from './core/j1979';
 export {
     ADAPTER_PRESETS,
     CLONE_V21_ADAPTER,

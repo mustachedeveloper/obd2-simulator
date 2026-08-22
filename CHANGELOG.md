@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/) (0.x: minor versions may break).
 
+## [1.0.0] - 2026-08-22
+
+First stable release. From here on the public API follows semantic
+versioning: everything exported from `obd2-simulator` and
+`obd2-simulator/node` (names guarded by `tests/api-surface.test.ts`), the
+`VehicleProfile` / `AdapterPersona` / `EngineSnapshot` data shapes (their
+fields are guarded at type level by the same test), the
+control-channel line protocol and the CLI flags are stable; removing or
+renaming any of them bumps the major version. Wire output may still change
+in minor versions when a recording proves real hardware behaves differently
+— that is the point of the library — and such changes are listed here.
+
+### Added
+
+- `HYBRID_PROFILE` + `hybridDrivingModel()` (CLI `--profile hybrid`): a
+  gasoline hybrid with PID `0x5B` (battery pack remaining life), fuel type
+  `0x11`, and the combustion engine off at standstill.
+- `PID_ENCODERS`, `encodeDtc`, `normalizeDtc` and the `PidEncoder` type are
+  exported, so tests can build expected wire bytes with the simulator's own
+  J1979 table.
+- API reference generated with typedoc (`npm run docs`) and published to
+  GitHub Pages on release tags (`.github/workflows/docs.yml`).
+
 ## [0.5.0] - 2026-08-22
 
 Scenario release: everything a test needs to steer the fake vehicle and
@@ -195,6 +218,7 @@ adapters (`tests/fixtures/wirelog`, replayed by `tests/wirelog-golden.test.ts`).
   in-process `MemoryLink`, Node TCP server and CLI; modes 01/02/03/04/06/07/
   09/0A, gasoline and diesel profiles, deterministic seeded output.
 
+[1.0.0]: https://github.com/mustachedeveloper/obd2-simulator/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/mustachedeveloper/obd2-simulator/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/mustachedeveloper/obd2-simulator/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/mustachedeveloper/obd2-simulator/compare/v0.3.0...v0.3.1

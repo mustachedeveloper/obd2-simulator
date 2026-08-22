@@ -1,0 +1,11 @@
+{
+    "$schema": "https://typedoc.org/schema.json",
+    "entryPoints": ["src/index.ts", "src/node/index.ts"],
+    "out": "docs/api",
+    "name": "obd2-simulator",
+    "readme": "README.md",
+    "excludePrivate": true,
+    "excludeInternal": true,
+    "treatWarningsAsErrors": false,
+    "navigation": { "includeGroups": true }
+}
