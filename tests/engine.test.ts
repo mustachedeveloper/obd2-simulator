@@ -1,6 +1,14 @@
 import {describe, expect, it} from 'vitest';
 import {DIESEL_PROFILE, GASOLINE_PROFILE, SimulatorEngine, dieselDrivingModel} from '../src/index';
 
+// '00A\r0:…\r1:…' → contiguous payload hex (single lines pass through).
+const isoTpPayload = (response: string): string =>
+    response
+        .split('\r')
+        .filter((line) => line.includes(':'))
+        .map((line) => line.slice(line.indexOf(':') + 1))
+        .join('') || response;
+
 const engineAt = (ms: number, extra: ConstructorParameters<typeof SimulatorEngine>[0] = {}) => {
     let current = 0;
     const engine = new SimulatorEngine({now: () => current, seed: 7, ...extra});
@@ -130,8 +138,9 @@ describe('mode 02 freeze frame', () => {
 describe('mode 06 monitor tests', () => {
     it('serves the profile records with mask discovery', () => {
         const engine = engineAt(0);
-        // Catalyst record: MID 21, TID 86, UAS 02, 200 in [0, 400].
-        expect(engine.handleCommand('0621')).toBe('4621860200C800000190');
+        // Catalyst record: MID 21, TID 86, UAS 02, 200 in [0, 400] — 10
+        // bytes, so the adapter prints the ISO-TP long form.
+        expect(engine.handleCommand('0621')).toBe('00A\r0:4621860200C8\r1:00000190');
         expect(engine.handleCommand('0622')).toBe('NO DATA');
     });
 });
@@ -169,7 +178,8 @@ describe('extended coverage (v0.2.0)', () => {
         expect(gasoline.handleCommand('019B')).toBe('NO DATA');
 
         const diesel = engineAt(0, {profile: DIESEL_PROFILE, model: dieselDrivingModel()});
-        const def = diesel.handleCommand('019B');
+        // 9-byte packet → ISO-TP long form; join the segments back.
+        const def = isoTpPayload(diesel.handleCommand('019B'));
         expect(def.startsWith('419B')).toBe(true);
         // DEF level byte D ≈ 78%.
         const levelByte = Number.parseInt(def.slice(4 + 6, 4 + 8), 16);

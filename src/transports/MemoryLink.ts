@@ -5,42 +5,81 @@ import {SimulatorEngine} from '../core/SimulatorEngine';
 // Platform-agnostic (works in React Native, Node and browsers) — timers are
 // the only environment API used. Emits responses with the same '\r\n>'
 // prompt framing as real ELM327 hardware, split into chunks so consumers
-// exercise their buffer-until-prompt logic on every run.
+// exercise their buffer-until-prompt logic on every run. Commands are
+// answered strictly in order: a slow response (ATST window) delays the
+// ones queued behind it, like a real single-threaded adapter.
 
 export interface MemoryLinkOptions {
     connectDelayMs?: number;
+    // Fixed base latency replacing the persona's baseLatencyMs.
     responseDelayMs?: number;
+    // Replaces the persona's jitter (0 → deterministic delays).
+    jitterMs?: number;
+    // false → ignore the ATST wait window, so responseDelayMs (+ jitter) is
+    // the whole delay, as in 0.2.0. Default true.
+    includeWaitWindow?: boolean;
     // Responses longer than this are emitted in two chunks.
     chunkSplitThreshold?: number;
+    // Oldest history entries are dropped beyond this many.
+    historyLimit?: number;
+}
+
+// One exchange as the link saw it; `at` is the wall-clock write time.
+export interface CommandLogEntry {
+    command: string;
+    response: string;
+    latencyMs: number;
+    at: number;
 }
 
 const DEFAULT_CONNECT_DELAY_MS = 150;
-const DEFAULT_RESPONSE_DELAY_MS = 40;
 const DEFAULT_CHUNK_SPLIT_THRESHOLD = 6;
+const DEFAULT_HISTORY_LIMIT = 500;
 
 export class MemoryLink {
     private readonly engine: SimulatorEngine;
     private readonly connectDelayMs: number;
-    private readonly responseDelayMs: number;
+    private readonly responseDelayMs: number | null;
+    private readonly jitterMs: number | null;
+    private readonly includeWaitWindow: boolean;
     private readonly chunkSplitThreshold: number;
+    private readonly historyLimit: number;
     private readonly dataListeners = new Set<(chunk: string) => void>();
     private readonly statusListeners = new Set<(status: LinkStatus) => void>();
     private readonly pendingTimers = new Set<ReturnType<typeof setTimeout>>();
-    // Rejection handles for promise-backed delays (connect). disconnect()
-    // must REJECT these, not just clear their timers — a cleared timer would
-    // leave an in-flight connect() pending forever.
+    // Rejection handles for promise-backed delays. disconnect() must REJECT
+    // these, not just clear their timers — a cleared timer would leave an
+    // in-flight connect() or queued response pending forever.
     private readonly pendingDelayRejects = new Set<(error: Error) => void>();
     private status: LinkStatus = 'disconnected';
+    private log: CommandLogEntry[] = [];
+    // Serialization point for responses: each write chains behind the last.
+    private tail: Promise<void> = Promise.resolve();
+    // Bumped on disconnect so responses still queued behind an in-flight
+    // delay notice they belong to a dead session and never emit.
+    private session = 0;
 
     constructor(engine: SimulatorEngine, options: MemoryLinkOptions = {}) {
         this.engine = engine;
         this.connectDelayMs = options.connectDelayMs ?? DEFAULT_CONNECT_DELAY_MS;
-        this.responseDelayMs = options.responseDelayMs ?? DEFAULT_RESPONSE_DELAY_MS;
+        this.responseDelayMs = options.responseDelayMs ?? null;
+        this.jitterMs = options.jitterMs ?? null;
+        this.includeWaitWindow = options.includeWaitWindow ?? true;
         this.chunkSplitThreshold = options.chunkSplitThreshold ?? DEFAULT_CHUNK_SPLIT_THRESHOLD;
+        this.historyLimit = options.historyLimit ?? DEFAULT_HISTORY_LIMIT;
     }
 
     get currentEngine(): SimulatorEngine {
         return this.engine;
+    }
+
+    // Every exchange since connect (or clearHistory), oldest first.
+    get history(): readonly CommandLogEntry[] {
+        return this.log;
+    }
+
+    clearHistory(): void {
+        this.log = [];
     }
 
     async connect(): Promise<void> {
@@ -55,6 +94,8 @@ export class MemoryLink {
         this.pendingTimers.clear();
         for (const reject of this.pendingDelayRejects) reject(new Error('simulator disconnected'));
         this.pendingDelayRejects.clear();
+        this.session += 1;
+        this.tail = Promise.resolve();
         this.setStatus('disconnected');
     }
 
@@ -62,12 +103,28 @@ export class MemoryLink {
         if (this.status !== 'connected') {
             throw new Error('simulator not connected');
         }
-        const response = `${this.engine.handleCommand(data)}\r\n>`;
-        const timer = setTimeout(() => {
-            this.pendingTimers.delete(timer);
-            this.emit(response);
-        }, this.responseDelayMs);
-        this.pendingTimers.add(timer);
+        const result = this.engine.execute(data);
+        const latencyMs = Math.max(
+            0,
+            (this.responseDelayMs ?? result.latency.baseMs) +
+                (this.jitterMs ?? result.latency.jitterMs) +
+                (this.includeWaitWindow ? result.latency.waitMs : 0),
+        );
+        this.record({command: result.command, response: result.response, latencyMs, at: Date.now()});
+        const response = `${result.response}\r\n>`;
+        const session = this.session;
+        this.tail = this.tail.then(
+            async () => {
+                if (session !== this.session) return;
+                await this.delay(latencyMs);
+                if (session !== this.session) return;
+                this.emit(response);
+            },
+            // A disconnect rejected the previous link; the session check
+            // above keeps anything queued behind it silent.
+            () => undefined,
+        );
+        this.tail.catch(() => undefined);
     }
 
     onData(cb: (chunk: string) => void): () => void {
@@ -78,6 +135,11 @@ export class MemoryLink {
     onStatusChange(cb: (status: LinkStatus) => void): () => void {
         this.statusListeners.add(cb);
         return () => this.statusListeners.delete(cb);
+    }
+
+    private record(entry: CommandLogEntry): void {
+        const next = [...this.log, entry];
+        this.log = next.length > this.historyLimit ? next.slice(next.length - this.historyLimit) : next;
     }
 
     private emit(response: string): void {

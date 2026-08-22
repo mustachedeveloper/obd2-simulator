@@ -145,20 +145,3 @@ export function maskBytesFor(ids: ReadonlySet<number>, baseId: number): string {
 }
 
 export const asciiBytes = (text: string): number[] => [...text].map((ch) => ch.charCodeAt(0));
-
-// Formats a payload the way an ELM327 prints it with spaces off: a single
-// hex line when it fits one CAN frame (≤7 bytes), otherwise the ISO-TP long
-// form — 3-digit length line, then 'N:'-prefixed segments (6 bytes first,
-// 7 thereafter).
-export function isoTpResponse(payload: readonly number[]): string {
-    const hex = payload.map(toHex).join('');
-    if (payload.length <= 7) return hex;
-    const lines = [payload.length.toString(16).toUpperCase().padStart(3, '0')];
-    let offset = 0;
-    for (let frame = 0; offset < hex.length; frame++) {
-        const take = (frame === 0 ? 6 : 7) * 2;
-        lines.push(`${(frame % 16).toString(16).toUpperCase()}:${hex.slice(offset, offset + take)}`);
-        offset += take;
-    }
-    return lines.join('\r');
-}
