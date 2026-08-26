@@ -230,7 +230,7 @@ Same seed + same clock → byte-identical output (latency jitter included). `Mem
 
 ## Changelog & contributing
 
-See [CHANGELOG.md](./CHANGELOG.md), [CONTRIBUTING.md](./CONTRIBUTING.md) and [SECURITY.md](./SECURITY.md).
+See [CHANGELOG.md](./CHANGELOG.md), [CONTRIBUTING.md](./CONTRIBUTING.md), [ROADMAP.md](./ROADMAP.md) and [SECURITY.md](./SECURITY.md).
 
 ## License
 
