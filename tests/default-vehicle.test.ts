@@ -9,7 +9,7 @@ import {
     createSimulator,
     gasolineDrivingModel,
 } from '../src/index';
-import {CYCLE, TRAITS} from '../src/vehicles/gasoline/driving';
+import {CYCLE, SIGNALS, TRAITS} from '../src/vehicles/gasoline/driving';
 
 // The default gasoline vehicle is recorded from a real car. These are the
 // answers that car gave (vLinker, spaces off, headers off) — static ones
@@ -50,16 +50,51 @@ describe('default gasoline vehicle — identity', () => {
         expect(lines(engine.handleCommand(command))).toEqual(expected);
     });
 
-    it('advertises only what the simulator can encode — the real masks minus 8 PIDs', () => {
+    it('advertises only what the simulator can encode — the real masks minus 4 PIDs', () => {
         // These blocks differ from the car exactly by the PIDs without an encoder.
         const engine = recordedCar();
         const mask = (command: string) => Number.parseInt(lines(engine.handleCommand(command))[0]?.slice(4) ?? '', 16);
         const dropped = (base: number, pids: readonly number[]) =>
             pids.reduce((bits, pid) => bits + 2 ** (0x20 - (pid - base)), 0);
-        expect(mask('0160 1')).toBe(0x6b09a141 - dropped(0x60, [0x65, 0x6d, 0x70, 0x71]));
-        expect(mask('0180 1')).toBe(0x0024000d - dropped(0x80, [0x8b, 0x9d, 0x9e]));
-        expect(mask('0120 1')).toBe(0x8007b011 - dropped(0x20, [0x34]));
+        expect(mask('0160 1')).toBe(0x6b09a141 - dropped(0x60, [0x65, 0x6d]));
+        expect(mask('0180 1')).toBe(0x0024000d - dropped(0x80, [0x9d, 0x9e]));
+        expect(mask('0120 1')).toBe(0x8007b011);
         for (const pid of GASOLINE_PROFILE.pids) expect(PID_ENCODERS[pid], `PID ${pid.toString(16)}`).toBeDefined();
+    });
+
+    it('pads frames with AA like the car: the last segment on the vLinker, never a single frame', () => {
+        const engine = recordedCar();
+        expect(GASOLINE_PROFILE.framePadding).toBe(0xaa);
+        // Recorded: 013 / 0:490401303545 / 1:30313945423431 / 2:38304245414AAA, then the same for the TCM.
+        expect(lines(engine.handleCommand('0904'))).toEqual([
+            '013',
+            '0:490401303545',
+            '1:30313945423431',
+            '2:38304245414AAA',
+            '013',
+            '0:490401304357',
+            '1:39303635353645',
+            '2:432B30353632AA',
+        ]);
+        // Recorded: 017 / 0:490A0145434D / 1:002D456E67696E / 2:65436F6E74726F / 3:6C0000AAAAAAAA …
+        expect(lines(engine.handleCommand('090A')).slice(0, 5)).toEqual([
+            '017',
+            '0:490A0145434D',
+            '1:002D456E67696E',
+            '2:65436F6E74726F',
+            '3:6C0000AAAAAAAA',
+        ]);
+        expect(lines(engine.handleCommand('010C 1'))[0]).toMatch(/^410C[0-9A-F]{4}$/);
+    });
+
+    it('follows the car where signals were fitted', () => {
+        const model = gasolineDrivingModel();
+        // Boosted engine: the manifold goes well above atmospheric under load, and sits in vacuum at idle.
+        const map = Array.from({length: 900}, (_, second) => model.value(0x0b, second, noJitter) ?? 0);
+        expect(Math.max(...map)).toBeGreaterThan(110);
+        expect(Math.min(...map)).toBeLessThan(45);
+        expect(model.value(0x8e, 100, noJitter)).toBe(5); // friction torque: +5 %, as recorded
+        expect(model.value(0x63, 100, noJitter)).toBe(250);
     });
 
     it('names both ECUs and reports 28 in-use counters', () => {
@@ -123,9 +158,16 @@ describe('default gasoline vehicle — driving', () => {
             chargingVoltage: 13.9,
             longTermFuelTrimPct: -5.5,
             intakeTempC: 42,
+            // From the 22 sessions that began with a cold engine.
+            coolantStartC: 46,
+            coolantWarmupTauS: 160,
+            oilOverCoolantC: 4,
         });
+        expect(model.value(0x05, 0, noJitter)).toBe(46);
+        expect(model.value(0x5c, 100_000, noJitter)).toBeCloseTo(97, 3);
         expect(model.value(0x05, 100_000, noJitter)).toBeCloseTo(93, 3);
-        expect(model.value(0x07, 0, noJitter)).toBe(-5.5);
+        // Long-term fuel trim comes from the fitted signals, which win over the trait.
+        expect(model.value(0x07, 0, noJitter)).toBe(SIGNALS[0x07]?.base);
     });
 
     it('is the model of a bare `new SimulatorEngine()`', () => {

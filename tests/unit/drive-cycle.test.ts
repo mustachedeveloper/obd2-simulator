@@ -8,13 +8,19 @@ const noJitter = () => 0;
 // FNV-1a over every PID at a spread of moments, jitter from a fixed seed:
 // one number that moves if any default value, or the order in which the
 // model draws jitter, ever changes.
+// PIDs the model learned after the fingerprints were taken: hashed as the
+// `null` they used to be, so the pinned values keep guarding everything else.
+const ADDED_LATER: ReadonlySet<number> = new Set([0x34, 0x70, 0x71, 0x8b]);
+const UNKNOWN_PID = 0xff;
+
 function fingerprint(model: DefaultDrivingModel): string {
     const random = mulberry32(11);
     const jitter = (amplitude: number) => (random() * 2 - 1) * amplitude;
     let hash = 0x811c9dc5;
     for (const seconds of [0, 0.5, 7, 19.9, 20, 24, 28, 60, 88, 92, 95.9, 96, 500, 3600, 86_400]) {
         for (let pid = 0; pid <= 0xff; pid++) {
-            const value = model.value(pid, seconds, jitter);
+            // An unknown PID draws the same driving-state jitter and answers null.
+            const value = model.value(ADDED_LATER.has(pid) ? UNKNOWN_PID : pid, seconds, jitter);
             for (const char of `${pid}@${seconds}=${value === null ? 'null' : value.toFixed(6)};`) {
                 hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193) >>> 0;
             }
@@ -34,7 +40,14 @@ describe('DefaultDrivingModel defaults', () => {
 
 describe('vehicle traits', () => {
     const model = new DefaultDrivingModel({
-        traits: {idleRpm: 930, coolantTargetC: 93, chargingVoltage: 13.9, longTermFuelTrimPct: -5.5, intakeTempC: 42},
+        traits: {
+            idleRpm: 930,
+            coolantTargetC: 93,
+            chargingVoltage: 13.9,
+            longTermFuelTrimPct: -5.5,
+            intakeTempC: 42,
+            oilOverCoolantC: 2,
+        },
     });
     const at = (pid: number, seconds: number) => model.value(pid, seconds, noJitter);
 
@@ -42,7 +55,7 @@ describe('vehicle traits', () => {
         expect(at(0x0c, 5)).toBe(930); // idling
         expect(at(0x05, 100_000)).toBeCloseTo(93, 3); // fully warm
         expect(at(0x67, 100_000)).toBeCloseTo(93, 3);
-        expect(at(0x5c, 100_000)).toBeCloseTo(101, 3); // oil settles 8 °C above coolant
+        expect(at(0x5c, 100_000)).toBeCloseTo(95, 3); // oil settles 2 °C above coolant on this car (default 8)
         expect(at(0x42, 5)).toBe(13.9);
         expect(at(0x07, 5)).toBe(-5.5);
         expect(at(0x0f, 5)).toBe(42);
@@ -58,6 +71,63 @@ describe('vehicle traits', () => {
     it('reject nonsense', () => {
         expect(() => new DefaultDrivingModel({traits: {idleRpm: -1}})).toThrow('traits.idleRpm');
         expect(() => new DefaultDrivingModel({traits: {coolantTargetC: Number.NaN}})).toThrow('traits.coolantTargetC');
+    });
+});
+
+describe('fitted signals', () => {
+    const cycle: DriveCycle = {
+        stepSeconds: 2,
+        speedKmh: [0, 36, 72, 36],
+        rpm: [900, 1500, 2100, 1300],
+        throttlePct: [12, 40, 30, 14],
+        engineLoadPct: [20, 70, 45, 10],
+    };
+    const signals = {
+        // intake MAP: 25 kPa + 0.8 kPa per % load + 2 kPa per 1000 rpm, measured between 20 and 180 kPa
+        0x0b: {base: 25, perLoadPct: 0.8, perKrpm: 2, perKmh: 0, min: 20, max: 180, noise: 1.5},
+        // ambient temperature: a constant
+        0x46: {base: 28, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 28, max: 28, noise: 0},
+        0x0e: {base: 40, perLoadPct: -1, perKrpm: 0, perKmh: 0, min: -10, max: 30, noise: 0},
+    };
+    const model = new DefaultDrivingModel({cycle, signals});
+    const at = (pid: number, seconds: number) => model.value(pid, seconds, noJitter);
+
+    it('compute a PID from the driving state', () => {
+        expect(at(0x0b, 0)).toBeCloseTo(25 + 0.8 * 20 + 2 * 0.9, 9);
+        expect(at(0x0b, 2)).toBeCloseTo(25 + 0.8 * 70 + 2 * 1.5, 9);
+        expect(at(0x46, 5)).toBe(28);
+    });
+
+    it('stay within the measured range', () => {
+        expect(at(0x0e, 2)).toBe(-10); // 40 - 70 → clamped
+        expect(at(0x0e, 6)).toBe(30); // 40 - 10 → exactly the maximum
+    });
+
+    it('add noise of the fitted size', () => {
+        expect(model.value(0x0b, 0, (amplitude) => amplitude)).toBeCloseTo(25 + 16 + 1.8 + 1.5, 9);
+        expect(model.value(0x46, 0, (amplitude) => amplitude)).toBe(28);
+    });
+
+    it('never replace what the cycle replays or what accumulates', () => {
+        const greedy = new DefaultDrivingModel({cycle, signals: {0x0c: signals[0x46], 0x0d: signals[0x46], 0xa6: signals[0x46]}});
+        expect(greedy.value(0x0c, 2, noJitter)).toBe(1500);
+        expect(greedy.value(0x0d, 2, noJitter)).toBe(36);
+        expect(greedy.value(0xa6, 0, noJitter)).toBeGreaterThan(1000);
+    });
+
+    it('yield to the stopped engine of a hybrid', () => {
+        const hybrid = new DefaultDrivingModel({cycle, signals, engineOffAtStandstill: true});
+        expect(hybrid.value(0x0b, 0, noJitter)).toBe(101); // atmospheric, not the fit
+    });
+
+    it('reject a malformed fit', () => {
+        const broken = {0x0b: {...signals[0x0b], min: 200}};
+        expect(() => new DefaultDrivingModel({signals: broken})).toThrow('signals[0x0b]');
+        expect(() => new DefaultDrivingModel({signals: {0x0b: {...signals[0x0b], noise: Number.NaN}}})).toThrow('signals[0x0b]');
+    });
+
+    it('leave the defaults untouched when absent or empty', () => {
+        expect(fingerprint(new DefaultDrivingModel({signals: {}}))).toBe('ba523393');
     });
 });
 
@@ -125,6 +195,23 @@ describe('recorded drive cycle', () => {
         expect(withFuel.value(0x5e, 5, noJitter)).toBe(2);
         // Without one it is estimated from load and speed, as before.
         expect(at(0x5e, 2)).toBeCloseTo(0.5 + 70 * 0.12 + 36 * 0.04, 6);
+    });
+
+    it('reads full lean on the lambda PIDs during fuel cut: rolling with zero engine load', () => {
+        // In the recordings load = 0 marks 90 % of the lean readings (1.5 % false alarms); the
+        // fuel-rate PID lags and marks only 60 %, so it plays no part.
+        const overrun = new DefaultDrivingModel({cycle: {...cycle, engineLoadPct: [20, 70, 0, 0], fuelRateLph: [0.8, 6, 3, 0]}});
+        for (const pid of [0x24, 0x34, 0x44]) {
+            expect(overrun.value(pid, 2, noJitter), `PID ${pid}`).toBe(1); // under load
+            expect(overrun.value(pid, 4, noJitter), `PID ${pid}`).toBeCloseTo(2, 4); // rolling, no load — whatever the fuel PID says
+            expect(overrun.value(pid, 3, noJitter), `PID ${pid}`).toBe(1); // load still 35 % between the samples
+        }
+        // Zero load while standing still (engine stopped or idling) is not overrun.
+        const standing = new DefaultDrivingModel({cycle: {...cycle, engineLoadPct: [0, 70, 45, 10]}});
+        expect(standing.value(0x44, 0, noJitter)).toBe(1);
+        // A recorded zero fuel rate alone does not make a fuel cut.
+        const lagging = new DefaultDrivingModel({cycle: {...cycle, fuelRateLph: [0.8, 6, 0, 0]}});
+        expect(lagging.value(0x44, 4, noJitter)).toBe(1);
     });
 
     it('stops the engine at standstill for hybrids', () => {

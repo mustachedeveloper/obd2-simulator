@@ -32,6 +32,29 @@ in minor versions when a recording proves real hardware behaves differently
   bundle); a `profile` passed without a `model` keeps the synthetic cycle. Use a response
   hint (`010C 1`) or `ATCRA` for single-line answers. The idealized
   single-ECU car is gone from the public API.
+- Wire output, measured against the recordings (replaying six real sessions,
+  44 667 exchanges: responses with the recorded line structure went from
+  56 % to 99.8 %):
+  - `VehicleProfile.framePadding`: the byte ECUs fill unused CAN frame bytes
+    with. The default car pads with `AA`, so the last `N:` segment of a
+    multi-frame response is a whole frame (`1:100D0CAAAAAAAA`) and raw
+    frames (`ATH1`) end in `AA` instead of `00`. Single frames with headers
+    off are unchanged. `AdapterPersona.trimsFramePadding` hides it again;
+    the v2.1 clone preset sets it, as that adapter does.
+  - Mode 09 ECU names are sent in the SAE J1979 layout — a 4-byte NUL-filled
+    acronym, `-`, text: `ECM-EngineControl` → `45 43 4D 00 2D …` — for every
+    vehicle, as real ECUs do (was `45 43 4D 2D …`).
+  - PIDs `34` (wide-band λ + pump current), `70` (boost pressure control),
+    `71` (wastegate / VGT control) and `8B` (aftertreatment status) have
+    encoders, checked against recorded bytes; the default car serves them
+    (51 PIDs).
+  - λ PIDs (`24`, `34`, `44`) read full lean (≈ 2) during fuel cut: the
+    recorded drive rolls with zero engine load. (Load, not fuel rate — in
+    the recordings zero load marks 90 % of the lean readings with 1.5 %
+    false alarms; the fuel-rate PID lags and marks 60 %.)
+  - The default car warms up like the car: from 46 °C with τ = 160 s (median
+    of its 22 recorded cold starts; was 22 °C / 150 s), oil settling 4 °C
+    above coolant (`VehicleTraits.oilOverCoolantC`, default 8).
 - `REFERENCE_PROFILE` was that same car, transcribed by hand; it is now an
   alias of `GASOLINE_PROFILE` (name `'reference'`). Two corrections come
   with it: the in-use performance record has 28 counters (`0908` → length
@@ -50,8 +73,12 @@ in minor versions when a recording proves real hardware behaves differently
   `--profile` keeps working.
 - `DefaultDrivingModel` options `traits` (`VehicleTraits`: idle speed,
   operating temperature, warm-up time, charging voltage, fuel trim, intake
-  temperature) and `cycle` (`DriveCycle`: a recorded drive replayed in a
-  loop). Without them the model's output is unchanged, byte for byte.
+  temperature, oil-over-coolant offset) and `cycle` (`DriveCycle`: a recorded drive replayed in a
+  loop) and `signals` (`SignalFits`: per-PID fits against load, rpm and
+  speed, which replace the generic formulas — the default car's manifold
+  pressure, absolute load, relative throttle, fuel trims, throttle actuator,
+  friction torque come from its recordings). Without them the model's
+  output is unchanged, byte for byte.
   `gasolineDrivingModel()` is the default vehicle's model.
 - `VehicleProfile.clearRequiresEngineOff`: mode 04 answers `7F 04 22` while
   the engine runs and clears with the key on, engine off. Off by default.

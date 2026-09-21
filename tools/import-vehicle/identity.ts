@@ -1,7 +1,7 @@
 import {PID_ENCODERS} from '../../src/core/j1979';
 import type {CanProtocol, EcuProfile, MonitorTestRecord, ReadinessBytes, VehicleProfile} from '../../src/core/types';
 import {syntheticVin} from './anonymize';
-import {ecuPayloads, requestOf} from './responses';
+import {ecuPayloads, framePaddingOf, requestOf} from './responses';
 import type {Exchange} from './session';
 
 // Builds the VehicleProfile from everything the vehicle ever answered:
@@ -242,6 +242,9 @@ export function buildIdentity(exchanges: readonly Exchange[], options: IdentityO
         ...(second ? [second] : []),
     ];
     const protocol = protocolOf(exchanges);
+    const paddingHex = mostCommon(
+        exchanges.map((exchange) => framePaddingOf(exchange.c, exchange.r)).filter((byte): byte is string => byte !== null),
+    );
     const required = ['0101', '0141', '0904', '0906', '090A', `09${counterInfotype}`, '0600', '03', '0A'];
 
     return {
@@ -261,6 +264,7 @@ export function buildIdentity(exchanges: readonly Exchange[], options: IdentityO
             ...(additionalEcus.length > 0 ? {additionalEcus} : {}),
             // Asked and never answered → the vehicle has no mode 0A.
             supportsPermanentDtcs: !asked.has('0A') || answers.has('0A'),
+            ...(paddingHex ? {framePadding: Number.parseInt(paddingHex, 16)} : {}),
         },
         report: {
             unsupportedPids: advertised.filter((pid) => PID_ENCODERS[pid] === undefined),

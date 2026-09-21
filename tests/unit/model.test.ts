@@ -28,6 +28,22 @@ describe('mulberry32', () => {
     });
 });
 
+describe('mode 09 ECU name (infotype 0A)', () => {
+    const nameOf = (name: string) => mode09Responses([{id: '7E8', name}], '0A')[0]?.payload.slice(3) ?? [];
+    const text = (bytes: readonly number[]) => bytes.map((byte) => (byte === 0 ? '·' : String.fromCharCode(byte))).join('');
+
+    it('sends the acronym as a NUL-filled 4-byte field, like vehicles do', () => {
+        expect(text(nameOf('ECM-EngineControl'))).toBe('ECM·-EngineControl··');
+        expect(text(nameOf('TCM-TransmisCtrl'))).toBe('TCM·-TransmisCtrl···');
+        expect(text(nameOf('ABS1-Brakes'))).toBe('ABS1-Brakes·········');
+    });
+
+    it('sends other names unchanged and never more than 20 bytes', () => {
+        expect(text(nameOf('Engine'))).toBe('Engine··············');
+        expect(nameOf('ECM-AnExtremelyLongEcuNameIndeed')).toHaveLength(20);
+    });
+});
+
 describe('DefaultDrivingModel', () => {
     const model = new DefaultDrivingModel();
     const at = (pid: number, seconds: number) => model.value(pid, seconds, noJitter);

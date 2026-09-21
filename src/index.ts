@@ -17,6 +17,7 @@ export type {SimulatorId} from './simulators/registry';
 export type {SimulatorDefinition, SimulatorKind, SimulatorProvenance} from './simulators/types';
 export type {DriveCycle} from './core/drive-cycle';
 export type {VehicleTraits} from './core/traits';
+export type {SignalFit, SignalFits} from './core/signals';
 export {PID_ENCODERS, encodeDtc, normalizeDtc} from './core/j1979';
 export type {PidEncoder} from './core/j1979';
 export {

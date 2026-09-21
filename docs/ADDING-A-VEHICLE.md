@@ -10,7 +10,7 @@ Wire logs in the AutoPulse logger format — gzip NDJSON, one record per line:
 |-----|--------|----------|
 | `h` | session header (adapter, device, install id) | provenance dates; its ids are treated as secrets |
 | `x` | adapter exchange `{c: command, r: raw response}` | identity: PID masks, readiness, modes 06/09, DTC services, protocol |
-| `s` | decoded sample `{p: channel, v: value}` | drive cycle and traits |
+| `s` | decoded sample `{p: channel, v: value}` | drive cycle, traits and signal fits |
 
 The more sessions the better: static answers are decided by majority (clones truncate and interleave long responses), drifting values (in-use counters, monitor results) come from the latest complete response. For a useful profile the logs should contain, at least once and preferably from a genuine adapter: `0100…01A0` **without** a response hint (so every ECU answers), `0101`, `0141`, `0902`, `0904`, `0906`, `0908`/`090B`, `090A`, the mode 06 MIDs, `03`, `07`, `0A`, `ATDPN`. The importer lists what was never sent.
 
@@ -36,7 +36,20 @@ npm run format
 | `--cycle-seconds <n>` | `900` | length of the replayed drive |
 | `--min-top-speed <km/h>` | `80` | the chosen window must reach this speed |
 
-Output: `profile.ts` (`PROFILE`, `PROVENANCE`) and `driving.ts` (`TRAITS`, `CYCLE`), about 30 KB together. Both are generated — change the importer, not the files. The run prints the PIDs the car advertises but the simulator cannot encode (they are left out of the profile; add an encoder to `src/core/j1979.ts` to serve them) and whether the car refuses mode 04 while running (`clearRequiresEngineOff` — enable it by hand if the simulator should do the same).
+Output: `profile.ts` (`PROFILE`, `PROVENANCE`) and `driving.ts` (`TRAITS`, `SIGNALS`, `CYCLE`), about 30 KB together. Both are generated — change the importer, not the files. The run prints the PIDs the car advertises but the simulator cannot encode (they are left out of the profile; add an encoder to `src/core/j1979.ts` to serve them) and whether the car refuses mode 04 while running (`clearRequiresEngineOff` — enable it by hand if the simulator should do the same).
+
+## Signals: what the recordings must contain
+
+`SIGNALS` holds one fit per PID — `value ≈ base + a·load + b·rpm/1000 + c·speed` — and the run prints a line per recorded channel:
+
+```
+PID 0B  n=   563  R²=0.51  → sloped      the driving state explains it: fitted
+PID 33  n=   563  R²=0.02  → constant    barely moves (judged against the signal's full scale)
+PID 0E  n=   318  R²=0.05  → none        lively but unexplained: the generic formula stays
+PID 78  n=    22  R²=   —  → none        too few samples to say anything
+```
+
+A sample only counts when load, rpm and speed were read within the 2 s before it, so **a channel polled once at connect contributes almost nothing**. The best recording for a new vehicle is a drive with every supported PID polled continuously (~1 Hz each) next to rpm, speed and load — a "full sweep". Channels are mapped to PIDs in `tools/import-vehicle/signals.ts` (`CHANNELS`); lambda and counters are left out on purpose. The noise of a fit is capped at 2 % of the measured range: the residual of a fit is slow, systematic error, and replaying it as per-reading jitter would make values jump.
 
 ## Privacy
 
@@ -50,7 +63,7 @@ Never copy raw recordings, real VINs or device ids into `tests/` or fixtures. If
 
    ```ts
    import {DefaultDrivingModel} from '../core/DefaultDrivingModel';
-   import {CYCLE, TRAITS} from '../vehicles/<name>/driving';
+   import {CYCLE, SIGNALS, TRAITS} from '../vehicles/<name>/driving';
    import {PROFILE, PROVENANCE} from '../vehicles/<name>/profile';
    import type {SimulatorDefinition} from './types';
 
@@ -61,7 +74,7 @@ Never copy raw recordings, real VINs or device ids into `tests/` or fixtures. If
        kind: 'recorded',
        provenance: PROVENANCE,
        profile: PROFILE,
-       createModel: () => new DefaultDrivingModel({traits: TRAITS, cycle: CYCLE}),
+       createModel: () => new DefaultDrivingModel({traits: TRAITS, cycle: CYCLE, signals: SIGNALS}),
    };
    ```
 
@@ -74,4 +87,4 @@ Ids are kebab-case and permanent: never rename or remove one within a major vers
 
 ## How the model uses the data
 
-`DefaultDrivingModel({traits, cycle})` replays the cycle's speed, rpm, throttle, load and fuel rate (linear interpolation, the last sample leading back into the first, no jitter added — the recording carries its own noise). Every other PID is derived from that same driving state, so signals always agree with each other; `traits` replace the constants that differ between cars (idle speed, operating temperature, warm-up time, charging voltage, long-term fuel trim, intake temperature).
+`DefaultDrivingModel({traits, cycle, signals})` replays the cycle's speed, rpm, throttle, load and fuel rate (linear interpolation, the last sample leading back into the first, no jitter added — the recording carries its own noise). A PID with a fit in `signals` is computed from that same driving state by the fit; every other PID by the model's generic formula — so signals always agree with each other; `traits` replace the constants that differ between cars (idle speed, operating temperature, charging voltage, long-term fuel trim, intake temperature — and, from the sessions that began with a cold engine (coolant ≤ 60 °C, at least three of them), the start temperature, the warm-up time constant and how far the warm oil sits above the coolant).

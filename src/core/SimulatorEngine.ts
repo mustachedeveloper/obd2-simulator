@@ -121,6 +121,12 @@ function validateEcuProfile(ecu: EcuProfile): EcuProfile {
     return ecu;
 }
 
+function validateFramePadding(padding: number | undefined): void {
+    if (padding !== undefined && !(Number.isInteger(padding) && padding >= 0 && padding <= 0xff)) {
+        throw new Error(`framePadding must be a byte (0..255), got ${padding}`);
+    }
+}
+
 export class SimulatorEngine {
     readonly profile: VehicleProfile;
     private readonly model: DrivingModel;
@@ -147,6 +153,7 @@ export class SimulatorEngine {
 
     constructor(options: SimulatorEngineOptions = {}) {
         this.profile = options.profile ?? GASOLINE_PROFILE;
+        validateFramePadding(this.profile.framePadding);
         // No profile → the default simulator, vehicle and recorded drive
         // together. A profile without a model always gets the synthetic
         // cycle, whatever the profile is: pairing a vehicle with its own
@@ -485,6 +492,8 @@ export class SimulatorEngine {
                       spaces: this.link.spaces,
                       extended: isExtended(this.effectiveProtocol()),
                       interleave: !this.persona.batch.multiFrameClean,
+                      padding: this.profile.framePadding,
+                      trimSegments: this.persona.trimsFramePadding === true,
                   });
         return {lines: [...preamble, ...lines], kind: 'obd', hint, responders: addressed.length, searched, state};
     }

@@ -6,6 +6,7 @@ import type {
     AdapterPersona,
     DriveCycle,
     EngineSnapshot,
+    SignalFit,
     SimulatorDefinition,
     SimulatorId,
     SimulatorProvenance,
@@ -123,6 +124,7 @@ describe('public API surface', () => {
             | 'protocol'
             | 'additionalEcus'
             | 'supportsPermanentDtcs'
+            | 'framePadding'
             | 'clearRequiresEngineOff'
         >();
         expectTypeOf<keyof AdapterPersona>().toEqualTypeOf<
@@ -142,6 +144,7 @@ describe('public API surface', () => {
             | 'protocolSearchMs'
             | 'bannerPrefix'
             | 'bannerBlankLine'
+            | 'trimsFramePadding'
         >();
         expectTypeOf<keyof EngineSnapshot>().toEqualTypeOf<
             'link' | 'storedDtcs' | 'pendingDtcs' | 'permanentDtcs' | 'freezeFrame' | 'overrides' | 'ignition' | 'pendingFaults'
@@ -158,10 +161,12 @@ describe('public API surface', () => {
             | 'coolantStartC'
             | 'coolantTargetC'
             | 'coolantWarmupTauS'
+            | 'oilOverCoolantC'
             | 'chargingVoltage'
             | 'longTermFuelTrimPct'
             | 'intakeTempC'
         >();
+        expectTypeOf<keyof SignalFit>().toEqualTypeOf<'base' | 'perLoadPct' | 'perKrpm' | 'perKmh' | 'min' | 'max' | 'noise'>();
         // Ids only ever get added.
         expectTypeOf<'default-gasoline' | 'default-diesel'>().toMatchTypeOf<SimulatorId>();
     });

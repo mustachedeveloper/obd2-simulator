@@ -2,6 +2,7 @@
 // Re-run `npm run import-vehicle` instead (see docs/ADDING-A-VEHICLE.md).
 
 import type {DriveCycle} from '../../core/drive-cycle';
+import type {SignalFits} from '../../core/signals';
 import type {VehicleTraits} from '../../core/traits';
 
 export const TRAITS: Partial<VehicleTraits> = {
@@ -10,6 +11,22 @@ export const TRAITS: Partial<VehicleTraits> = {
     chargingVoltage: 13.9,
     longTermFuelTrimPct: -5.5,
     intakeTempC: 42,
+    coolantStartC: 46,
+    coolantWarmupTauS: 160,
+    oilOverCoolantC: 4,
+};
+
+// How each PID followed load, rpm and speed in the recordings (least squares; constants where unrelated).
+export const SIGNALS: SignalFits = {
+    0x06: {base: -0.7813, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: -3.125, max: 3.125, noise: 0.125},
+    0x07: {base: -7.031, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: -9.375, max: -3.906, noise: 0.1094},
+    0x0b: {base: 3.645, perLoadPct: 0.8083, perKrpm: 4.724, perKmh: 0.6952, min: 22, max: 184, noise: 3.24},
+    0x33: {base: 100, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 90, max: 101, noise: 0},
+    0x43: {base: -8.921, perLoadPct: 0.6839, perKrpm: 10.4, perKmh: 0.3448, min: 0, max: 129, noise: 2.58},
+    0x45: {base: -8.472, perLoadPct: 0.2431, perKrpm: 2.757, perKmh: 0.3875, min: 0, max: 74.12, noise: 1.482},
+    0x4c: {base: 3.529, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 2.353, max: 15.69, noise: 0.2667},
+    0x63: {base: 250, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 250, max: 250, noise: 0},
+    0x8e: {base: 5, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 3, max: 6, noise: 0},
 };
 
 // 900 samples, 1 s apart, starting and ending at standstill.

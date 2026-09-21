@@ -81,6 +81,7 @@ export const CLONE_V21_ADAPTER: AdapterPersona = {
     protocolSearchMs: 150,
     bannerPrefix: 'OK',
     bannerBlankLine: false,
+    trimsFramePadding: true,
 };
 
 /**

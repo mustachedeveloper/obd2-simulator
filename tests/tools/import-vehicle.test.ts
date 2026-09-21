@@ -2,8 +2,9 @@ import {describe, expect, it} from 'vitest';
 import {assertNoLeak, syntheticVin} from '../../tools/import-vehicle/anonymize';
 import {buildCycle, toSeries} from '../../tools/import-vehicle/cycle';
 import {buildIdentity} from '../../tools/import-vehicle/identity';
-import {ecuPayloads} from '../../tools/import-vehicle/responses';
-import {deriveTraits} from '../../tools/import-vehicle/traits';
+import {ecuPayloads, framePaddingOf} from '../../tools/import-vehicle/responses';
+import {fitSignals} from '../../tools/import-vehicle/signals';
+import {deriveTraits, deriveWarmup} from '../../tools/import-vehicle/traits';
 import type {Exchange, Sample} from '../../tools/import-vehicle/session';
 
 describe('ecuPayloads', () => {
@@ -62,6 +63,18 @@ describe('ecuPayloads', () => {
         expect(payload?.length).toBe(0x76 * 2);
     });
 
+    it('finds the byte the vehicle pads its last frame with', () => {
+        expect(framePaddingOf('0902', '014\r0:490201544D42\r1:414E384E5A3253\r2:43393939393939\r\r')).toBeNull(); // exact fit
+        expect(framePaddingOf('010C5E0D', '009\r0:410C153E5E00\r1:320D00AAAAAAAA\r\r')).toBe('AA');
+        expect(framePaddingOf('010C5E0D', '009\r0:410C153E5E00\r1:320D00\r\r')).toBeNull();
+        expect(framePaddingOf('010C5E0D', '009\r0:410C153E5E00\r1:320D0055AA55AA\r\r')).toBeNull(); // not one byte repeated
+        expect(framePaddingOf('0100', '4100BE3EA813\r\r')).toBeNull();
+        // Two responders: segments are ambiguous, no verdict.
+        expect(
+            framePaddingOf('0904', '013\r0:490401303545\r1:30313945423431\r2:38304245414AAA\r013\r0:490401304357\r\r'),
+        ).toBeNull();
+    });
+
     it('rejects a truncated multi-frame response', () => {
         expect(ecuPayloads('0601', '025\r0:46018B850037\r1:F5BF7FFF018A85\r\r')).toEqual([]);
     });
@@ -106,6 +119,7 @@ describe('buildIdentity', () => {
         x('0602', '01C\r0:46020510003C\r1:0000025802960A\r2:06360000066802\r3:950A17FC17FC28\r4:00AAAAAAAAAAAA\r\r', 2),
         x('03', '4300\r7F0310\r4300\r\r'),
         x('0A', 'NO DATA\r\r'),
+        x('010C5E0D 1', '009\r0:410C153E5E00\r1:320D00AAAAAAAA\r\r'),
         x('04', '7F0422\r7F0422\r7F0422\r\r'),
     ];
     const {profile, report, secrets} = buildIdentity(exchanges, {name: 'gasoline', vinSerial: '123456'});
@@ -161,6 +175,10 @@ describe('buildIdentity', () => {
                 cvn: 'A9C9EF55',
             },
         ]);
+    });
+
+    it('records the frame padding byte', () => {
+        expect(profile.framePadding).toBe(0xaa);
     });
 
     it('notices a vehicle that refuses to clear codes while running', () => {
@@ -222,6 +240,111 @@ describe('drive cycle extraction', () => {
     });
 });
 
+describe('fitSignals', () => {
+    // A drive where MAP = 25 + 0.8·load + 2·krpm exactly, timing advance is unrelated noise,
+    // barometric pressure is constant and one glitch hits the MAP sensor.
+    const drive = (offsetMs: number): Sample[] =>
+        Array.from({length: 400}, (_, i) => {
+            const t = offsetMs + i * 1000;
+            const load = 10 + ((i * 7) % 80);
+            const rpm = 900 + ((i * 131) % 3000);
+            const speed = (i * 3) % 120;
+            return [
+                {t, p: 'engineLoad', v: load},
+                {t: t + 10, p: 'rpm', v: rpm},
+                {t: t + 20, p: 'speed', v: speed},
+                {t: t + 30, p: 'intakeMap', v: i === 200 ? 6000 : 25 + 0.8 * load + (2 * rpm) / 1000},
+                {t: t + 40, p: 'timingAdvance', v: 10 + ((i * 37) % 11) - 5},
+                {t: t + 50, p: 'baro', v: 100},
+                {t: t + 60, p: 'someUnknownChannel', v: 1},
+            ];
+        }).flat();
+    const {signals: fits, diagnosis} = fitSignals([drive(0), drive(10_000_000)], [0x0b, 0x0e, 0x33]);
+
+    it('recovers how a signal follows the driving state', () => {
+        const map = fits[0x0b];
+        expect(map?.base).toBeCloseTo(25, 1);
+        expect(map?.perLoadPct).toBeCloseTo(0.8, 2);
+        expect(map?.perKrpm).toBeCloseTo(2, 1);
+        expect(map?.perKmh).toBeCloseTo(0, 2);
+        expect(map?.noise).toBeLessThan(0.5);
+    });
+
+    it('cuts glitches out of the range', () => {
+        expect(fits[0x0b]?.max).toBeLessThan(200);
+    });
+
+    it('reports what it decided per channel', () => {
+        expect(diagnosis.map(({pid, outcome}) => [pid, outcome])).toEqual([
+            [0x0b, 'sloped'],
+            [0x0e, 'none'],
+            [0x33, 'constant'],
+        ]);
+        expect(diagnosis[0]?.rSquared).toBeGreaterThan(0.99);
+        expect(diagnosis[1]?.rSquared).toBeLessThan(0.5);
+    });
+
+    it('calls a channel that barely moves a constant', () => {
+        expect(fits[0x33]).toEqual({base: 100, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 100, max: 100, noise: 0});
+    });
+
+    it('leaves a lively channel the state does not explain to the generic formula', () => {
+        // Timing advance swings ±5° around 10° unrelated to the state: freezing it would be worse.
+        expect(fits[0x0e]).toBeUndefined();
+    });
+
+    it('bounds the noise by the measured range, not by the residual', () => {
+        const noisy = drive(0).map((sample, i) =>
+            sample.p === 'intakeMap' ? {...sample, v: sample.v + ((i * 7919) % 41) - 20} : sample,
+        );
+        const fit = fitSignals([noisy], [0x0b]).signals[0x0b];
+        expect(fit?.perLoadPct).toBeCloseTo(0.8, 0);
+        expect(fit?.noise).toBeLessThanOrEqual(0.02 * ((fit?.max ?? 0) - (fit?.min ?? 0)) + 1e-9);
+    });
+
+    it('does not freeze a signal that is usually at rest but has a wide range', () => {
+        // A pedal read mostly at idle: 95 % of the samples at 14 %, the rest up to 60 %.
+        const pedal = drive(0).map((sample, i) =>
+            sample.p === 'baro' ? {...sample, p: 'pedalPosition', v: Math.floor(i / 7) % 20 === 0 ? 60 : 14} : sample,
+        );
+        expect(fitSignals([pedal], [0x49]).signals).toEqual({});
+    });
+
+    it('needs a minimum of samples even for a constant', () => {
+        expect(fitSignals([drive(0).slice(0, 7 * 10)], [0x33]).signals).toEqual({}); // 10 samples are not
+    });
+
+    it('judges "barely moves" against the full scale, so small values can be constants', () => {
+        // Friction torque 4..6 % on a 255 % scale: tiny in absolute terms, large relative to its median.
+        const friction = drive(0).map((sample, i) =>
+            sample.p === 'baro' ? {...sample, p: 'frictionTorque', v: 4 + (i % 3)} : sample,
+        );
+        expect(fitSignals([friction], [0x8e]).signals[0x8e]).toMatchObject({base: 5, perLoadPct: 0, min: 4, max: 6});
+    });
+
+    it('never fits lambda or counters', () => {
+        const lambda = drive(0).map((sample) => (sample.p === 'baro' ? {...sample, p: 'commandedLambda', v: 1} : sample));
+        expect(fitSignals([lambda], [0x44]).signals).toEqual({});
+    });
+
+    it('fits only requested PIDs and known channels, and needs a fresh driving state', () => {
+        expect(Object.keys(fitSignals([drive(0)], [0x33]).signals)).toEqual([String(0x33)]);
+        const stale: Sample[] = [
+            {t: 0, p: 'engineLoad', v: 20},
+            {t: 0, p: 'rpm', v: 900},
+            {t: 0, p: 'speed', v: 0},
+            {t: 60_000, p: 'baro', v: 100},
+        ];
+        expect(fitSignals([stale], [0x33]).signals).toEqual({});
+    });
+
+    it('does not fit slopes to a handful of samples', () => {
+        const few = drive(0).slice(0, 7 * 20);
+        expect(fitSignals([few], [0x0b]).signals[0x0b]).toBeUndefined(); // lively and unexplained → generic formula
+        expect(fitSignals([few], [0x33]).signals[0x33]?.base).toBe(100); // 20 samples are enough for a constant
+    });
+});
+
 describe('deriveTraits', () => {
     it('takes medians of what the vehicle reported', () => {
         const samples: Sample[] = [
@@ -243,6 +366,31 @@ describe('deriveTraits', () => {
             longTermFuelTrimPct: -5.5,
             intakeTempC: 42,
         });
+    });
+
+    it('derives the warm-up from cold starts only', () => {
+        // Coolant every 10 s: start + (93 − start)·(1 − e^(−t/200)).
+        const session = (start: number, offsetMs: number): Sample[] =>
+            Array.from({length: 120}, (_, i) => ({
+                t: offsetMs + i * 10_000,
+                p: 'coolant',
+                v: Math.round(start + (93 - start) * (1 - Math.exp(-(i * 10) / 200))),
+            }));
+        const oil = (offsetMs: number): Sample[] =>
+            [90, 95, 96].map((v, i) => ({t: offsetMs + 1_100_000 + i * 1000, p: 'oilTemp', v}));
+        const cold = [40, 44, 48].map((start, i) => [...session(start, i * 10_000_000), ...oil(i * 10_000_000)]);
+        const warm = [...session(88, 50_000_000)];
+        const traits = deriveWarmup([...cold, warm], 93);
+        expect(traits.coolantStartC).toBe(44); // median of the cold starts; the warm start does not count
+        expect(traits.coolantWarmupTauS).toBeGreaterThan(170);
+        expect(traits.coolantWarmupTauS).toBeLessThan(230);
+        expect(traits.oilOverCoolantC).toBe(2); // warm oil median 95 − target 93
+    });
+
+    it('says nothing about the warm-up without enough cold starts', () => {
+        const one: Sample[] = Array.from({length: 60}, (_, i) => ({t: i * 10_000, p: 'coolant', v: Math.min(93, 40 + i)}));
+        expect(deriveWarmup([one], 93)).toEqual({});
+        expect(deriveWarmup([], 93)).toEqual({});
     });
 
     it('leaves out what was never recorded', () => {

@@ -6,7 +6,7 @@ State as of 2026-09-21: the 1.0.0 work is committed on the stacked branches
 vehicle and `npm run import-vehicle` sit on top of `release/1.0.0` and are
 part of 1.0.0. Nothing is pushed; npm still serves 0.2.0.
 
-Verified on 2026-09-21: 293 tests, 96.3 % statement coverage, clean
+Verified on 2026-09-21: 331 tests, 96.5 % statement coverage, clean
 typecheck/lint, the core bundle runs without Node globals and stays inside
 its 160 KB budget (132 KB), a CLI end-to-end run (`--simulator`,
 `--list-simulators`, a live TCP session) behaves as documented. Verified on
@@ -48,8 +48,28 @@ definition (`docs/ADDING-A-VEHICLE.md`). Known gaps the recordings exposed:
 - **Real 29-bit source addresses.** The car's ECUs answer as `18DAF101` /
   `18DAF102`; the simulator maps `7E8`/`7E9` to `18DAF110` / `18DAF118`.
   Needs an optional `EcuProfile.sourceAddress` (and one for the engine ECU).
-- **Encoders for PIDs `34 65 6D 70 71 8B 9D 9E`** — advertised by the
-  recorded car, left out of its profile because `PID_ENCODERS` lacks them.
+- **Encoders for PIDs `65 6D 9D 9E`** — advertised by the recorded car, left
+  out of its profile: no recording ever polled them, so there are no bytes
+  to check an encoder against (`34 70 71 8B` were added from recorded bytes).
+- **A full-sweep recording.** Most secondary PIDs were polled a handful of
+  times at connect, so only 9 signals could be fitted; exhaust gas
+  temperature (real ≈ 570 °C, generic formula ≈ 350 °C), exhaust pressure,
+  purge, O2 sensor 2 and ambient temperature stay on generic formulas until
+  a drive is recorded with every supported PID polled continuously.
+- **The engine ECU's shutdown phase.** For a few seconds after the engine
+  stops the car answers mode 01 with `7F 01 22` (engine ECU only, TCM
+  silent) before going quiet; `setIgnition('off')` goes straight to NO DATA.
+- **Adaptive timing (`ATAT1`).** On the vLinker an unhinted request returns
+  after ≈ 86 ms with `ATST19` (base 31 ms + ≈ 55 % of the 100 ms window);
+  the simulator waits the whole window (132 ms) by design
+  (`ADAPTIVE_TIMING_FACTORS[1] = 1`). A per-persona factor would fit the
+  measurement without changing the other presets. The clone presets are
+  also faster than the hardware (AT commands 20 ms vs 45–70 ms measured).
+- **A second padding-printing clone** (BLE name `OBDII`): prints `AA` after
+  single frames too (`4100BE3EA813AA`) and glues the second ECU's first
+  frame into the first ECU's segment numbering (`3:13490401…`).
+- **PID `A4` layout**: the car sends `01 20 00 00` (gear in the upper nibble
+  of byte B), the encoder writes `00 01` + ratio.
 - **Clone truncation as a persona trait.** The v2.1 clone cuts multi-frame
   responses off after five frames (`0908` → `01B` instead of `03B`, mode 06
   records lose their tail); today that is a documented deviation in
@@ -57,8 +77,10 @@ definition (`docs/ADDING-A-VEHICLE.md`). Known gaps the recordings exposed:
 - **Mode 04 with several ECUs.** `clearRequiresEngineOff` refuses for every
   ECU; the recordings also show mixed answers (`44` from one module,
   `7F0478` from another) that are not modelled.
-- **Warm-up time** (`coolantWarmupTauS`) and the cold-start temperature are
-  not derived yet — the importer leaves them at their defaults.
+- **Thermostat behaviour.** With the right start temperature the coolant
+  model is within 3.5 °C of the car on average; what remains is the real
+  85–99 °C swing with load and airflow around a target the model holds
+  flat, and oil that starts at coolant temperature on hot restarts.
 - A second, single-ECU CAN 11-bit vehicle is in the data store (2026-08-23
   sessions) and would be the first test of the pipeline on another car; it
   needs recordings with VIN, mode 09 and a full drive first.

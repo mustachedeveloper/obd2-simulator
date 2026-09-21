@@ -133,6 +133,7 @@ new SimulatorEngine({
         protocol: '7',                       // ISO 15765-4 CAN 29/500 → 18DAF1xx headers, ATDPN 'A7'
         supportsPermanentDtcs: false,        // mode 0A → NO DATA
         clearRequiresEngineOff: true,        // mode 04 → 7F 04 22 while running (the recorded car does this)
+        framePadding: 0xaa,                  // unused CAN frame bytes: last 'N:' segment and raw frames end in AA
         additionalEcus: [
             {id: '7E9', name: 'TCM', pids: [0x0c, 0x0d], readiness: [0x04, 0, 0], calibrationId: 'TCM-CAL-01', cvn: 'A9C9EF55'},
             {id: '7EA', pids: [], dtcReply: 'reject'}, // answers 03/07 with 7F xx 10 only
@@ -155,6 +156,7 @@ import {DefaultDrivingModel} from 'obd2-simulator';
 
 new DefaultDrivingModel({
     traits: {idleRpm: 930, coolantTargetC: 93},              // unset traits keep their defaults
+    signals: {0x0b: {base: 4, perLoadPct: 0.8, perKrpm: 4.7, perKmh: 0.7, min: 22, max: 184, noise: 3}}, // MAP fitted to recordings
     cycle: {stepSeconds: 1, speedKmh: [...], rpm: [...], throttlePct: [...], engineLoadPct: [...]},
 });
 ```

@@ -1,6 +1,6 @@
 import {DefaultDrivingModel} from '../core/DefaultDrivingModel';
 import type {DrivingModel, VehicleProfile} from '../core/types';
-import {CYCLE, TRAITS} from '../vehicles/gasoline/driving';
+import {CYCLE, SIGNALS, TRAITS} from '../vehicles/gasoline/driving';
 import {PROFILE} from '../vehicles/gasoline/profile';
 
 /**
@@ -18,4 +18,4 @@ export const GASOLINE_PROFILE: VehicleProfile = PROFILE;
  * country road) replayed in a loop, with the car's measured idle speed,
  * operating temperature, charging voltage and fuel trim.
  */
-export const gasolineDrivingModel = (): DrivingModel => new DefaultDrivingModel({traits: TRAITS, cycle: CYCLE});
+export const gasolineDrivingModel = (): DrivingModel => new DefaultDrivingModel({traits: TRAITS, cycle: CYCLE, signals: SIGNALS});

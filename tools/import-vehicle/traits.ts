@@ -32,6 +32,53 @@ function idleRpms(samples: readonly Sample[]): number[] {
     });
 }
 
+const COLD_START_MAX_C = 60;
+const MIN_COLD_STARTS = 3;
+const WARM_OIL_AFTER_S = 900;
+// 1 − 1/e: the share of the way to the target reached after one time constant.
+const ONE_TAU_SHARE = 0.632;
+
+interface ColdStart {
+    startC: number;
+    tauS: number;
+}
+
+// A session that began with a cold engine and got one time constant of the way.
+function coldStartOf(samples: readonly Sample[], targetC: number): ColdStart | null {
+    const coolant = samples.filter((sample) => sample.p === 'coolant').sort((a, b) => a.t - b.t);
+    const [first] = coolant;
+    if (!first || first.v > COLD_START_MAX_C) return null;
+    const goal = first.v + (targetC - first.v) * ONE_TAU_SHARE;
+    const reached = coolant.find((sample) => sample.v >= goal);
+    return reached ? {startC: first.v, tauS: (reached.t - first.t) / 1000} : null;
+}
+
+/**
+ * Start temperature and warm-up time constant from the sessions that began
+ * cold, and how far above the coolant the warm oil sits. Sessions that
+ * began warm (most do: short stops) say nothing about a warm-up and are
+ * ignored; fewer than three cold starts → no verdict.
+ */
+export function deriveWarmup(sessions: readonly (readonly Sample[])[], coolantTargetC: number): Partial<VehicleTraits> {
+    const cold = sessions
+        .map((samples) => coldStartOf(samples, coolantTargetC))
+        .filter((start): start is ColdStart => start !== null);
+    const warmOil = sessions.flatMap((samples) => {
+        const startedAt = samples.reduce((min, sample) => Math.min(min, sample.t), Number.POSITIVE_INFINITY);
+        return samples
+            .filter((sample) => sample.p === 'oilTemp' && sample.t - startedAt >= WARM_OIL_AFTER_S * 1000)
+            .map((sample) => sample.v);
+    });
+    const oil = median(warmOil);
+    const enough = cold.length >= MIN_COLD_STARTS;
+    const measured = {
+        coolantStartC: enough ? rounded(median(cold.map((start) => start.startC)), 0) : null,
+        coolantWarmupTauS: enough ? rounded(median(cold.map((start) => start.tauS)), 0) : null,
+        oilOverCoolantC: oil === null ? null : rounded(oil - coolantTargetC, 0),
+    };
+    return Object.fromEntries(Object.entries(measured).filter(([, value]) => value !== null)) as Partial<VehicleTraits>;
+}
+
 const rounded = (value: number | null, decimals: number): number | null =>
     value === null ? null : Number(value.toFixed(decimals));
 
@@ -43,6 +90,7 @@ export function deriveTraits(samples: readonly Sample[]): Partial<VehicleTraits>
         coolantStartC: null,
         coolantTargetC: rounded(median(valuesOf(samples, 'coolant').filter((value) => value >= WARM_COOLANT_C)), 0),
         coolantWarmupTauS: null,
+        oilOverCoolantC: null,
         chargingVoltage: rounded(voltage, 1),
         longTermFuelTrimPct: rounded(median(valuesOf(samples, 'ltft1')), 1),
         intakeTempC: rounded(median(valuesOf(samples, 'intakeTemp')), 0),

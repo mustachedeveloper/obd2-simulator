@@ -4,6 +4,26 @@ import {ADDITIONAL_ECU_ID, addressedEcus, ecuHeader, headerText, isExtended} fro
 
 const bytes = (n: number): number[] => Array.from({length: n}, (_, i) => i + 1);
 
+describe('frame padding', () => {
+    const payload = [0x49, 0x04, 0x01, ...Array.from({length: 16}, (_, index) => 0x30 + index)]; // 19 bytes: 6 + 7 + 6
+
+    it('fills the last consecutive frame with the vehicle padding byte', () => {
+        expect(isoTpLines(payload, false, 0xaa)).toEqual(['013', '0:490401303132', '1:33343536373839', '2:3A3B3C3D3E3FAA']);
+        expect(isoTpLines(payload, true, 0xaa)[3]).toBe('2: 3A 3B 3C 3D 3E 3F AA');
+        expect(isoTpLines(payload)).toEqual(['013', '0:490401303132', '1:33343536373839', '2:3A3B3C3D3E3F']);
+    });
+
+    it('leaves single frames alone with headers off — the adapter prints PCI-length bytes', () => {
+        expect(isoTpLines([0x41, 0x0c, 0x0e, 0x7e], false, 0xaa)).toEqual(['410C0E7E']);
+    });
+
+    it('pads raw CAN frames (headers on) with the same byte', () => {
+        expect(canFrames([0x41, 0x0c, 0x0e, 0x7e], 0xaa)).toEqual([[0x04, 0x41, 0x0c, 0x0e, 0x7e, 0xaa, 0xaa, 0xaa]]);
+        expect(canFrames([0x41, 0x0c, 0x0e, 0x7e])).toEqual([[0x04, 0x41, 0x0c, 0x0e, 0x7e, 0, 0, 0]]);
+        expect(canFrames(payload, 0xaa)[2]).toEqual([0x22, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0xaa]);
+    });
+});
+
 describe('ISO-TP framing', () => {
     it('keeps up to 7 bytes in a single frame, then switches to the long form', () => {
         expect(isoTpLines(bytes(7))).toEqual(['01020304050607']);

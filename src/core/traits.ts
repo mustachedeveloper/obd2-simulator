@@ -9,11 +9,15 @@ export interface VehicleTraits {
     idleRpm: number;
     /**
      * Coolant at power-on and once warm; the warm-up follows
-     * 1 − e^(−t/τ). Oil lags (1.6 τ) and settles 8 °C above coolant.
+     * 1 − e^(−t/τ). Oil lags (1.6 τ) and settles `oilOverCoolantC` above.
      */
     coolantStartC: number;
     coolantTargetC: number;
     coolantWarmupTauS: number;
+    /**
+     * How far above the coolant the warm oil settles.
+     */
+    oilOverCoolantC: number;
     /**
      * Module voltage (PID 0x42) with the alternator charging.
      */
@@ -33,6 +37,7 @@ export const DEFAULT_TRAITS: VehicleTraits = {
     coolantStartC: 22,
     coolantTargetC: 90,
     coolantWarmupTauS: 150,
+    oilOverCoolantC: 8,
     chargingVoltage: 14.1,
     longTermFuelTrimPct: 2,
     intakeTempC: 25,
@@ -43,6 +48,7 @@ const RANGES: Readonly<Record<keyof VehicleTraits, readonly [number, number]>> =
     coolantStartC: [-40, 215],
     coolantTargetC: [-40, 215],
     coolantWarmupTauS: [1, 86_400],
+    oilOverCoolantC: [-50, 100],
     chargingVoltage: [6, 65],
     longTermFuelTrimPct: [-100, 99.2],
     intakeTempC: [-40, 215],

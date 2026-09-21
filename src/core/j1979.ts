@@ -23,6 +23,9 @@ const minutes = (value: number): number[] => word(Math.round(clamp(value, 0, 655
 const catTemp = (value: number): number[] => word(Math.round(clamp((value + 40) * 10, 0, 65535)));
 // Wide-band lambda (4-byte PIDs): ratio in AB, nominal voltage word in CD.
 const lambda = (value: number): number[] => [...word(Math.round(clamp(value, 0, 2) * 32768)), 0x80, 0x00];
+// Wide-band lambda with pump current (PIDs 0x34+): ratio in AB, current in
+// CD as (mA + 128) × 256 — 0x8000 is 0 mA, where a sensor at λ = 1 sits.
+const lambdaCurrent = (value: number): number[] => [...word(Math.round(clamp(value, 0, 1.99997) * 32768)), 0x80, 0x00];
 const egtWord = (value: number): number[] => word(Math.round(clamp((value + 40) * 10, 0, 65535)));
 
 // Encoders for the PIDs the default simulated vehicles expose. Extending the
@@ -65,6 +68,7 @@ const ENCODER_TABLE: Record<number, PidEncoder> = {
     0x31: {bytes: 2, encode: (v) => word(Math.round(clamp(v, 0, 65535)))}, // distance since clear
     0x32: {bytes: 2, encode: (v) => word(Math.round(clamp(v, -8192, 8191) * 4) & 0xffff)}, // evap vapor pressure
     0x33: {bytes: 1, encode: raw1}, // barometric pressure
+    0x34: {bytes: 4, encode: lambdaCurrent}, // O2 S1 lambda + current
     0x3c: {bytes: 2, encode: catTemp}, // catalyst temp B1S1
     0x3e: {bytes: 2, encode: catTemp}, // catalyst temp B1S2
     0x42: {bytes: 2, encode: (v) => word(Math.round(clamp(v, 0, 65.535) * 1000))}, // module voltage
@@ -111,6 +115,10 @@ const ENCODER_TABLE: Record<number, PidEncoder> = {
     0x68: {bytes: 7, encode: (v) => [0x03, temp(v)[0], temp(v + 1)[0], 0, 0, 0, 0]},
     0x69: {bytes: 7, encode: (v) => [0x07, pct(v)[0], pct(v * 0.95)[0], fuelTrim(0)[0], 0, 0, 0]},
     0x6f: {bytes: 3, encode: (v) => [0x01, raw1(v)[0], 0]},
+    // Boost pressure control: actual boost A (absolute kPa, 0.03125/bit) in DE.
+    0x70: {bytes: 10, encode: (v) => [0x02, 0, 0, ...word(Math.round(clamp(v, 0, 2047) / 0.03125)), 0, 0, 0, 0, 0]},
+    // Turbo geometry / wastegate control: commanded (B) and actual (C) position A.
+    0x71: {bytes: 6, encode: (v) => [0x07, pct(v)[0], pct(v)[0], 0, 0, 0x02]},
     0x73: {bytes: 5, encode: (v) => [0x01, ...word(Math.round(clamp(v, 0, 655) * 100)), 0, 0]},
     0x74: {bytes: 5, encode: (v) => [0x01, ...word(Math.round(clamp(v, 0, 65535))), 0, 0]},
     0x78: {bytes: 9, encode: (v) => [0x03, ...egtWord(v), ...egtWord(v - 30), 0, 0, 0, 0]},
@@ -129,6 +137,8 @@ const ENCODER_TABLE: Record<number, PidEncoder> = {
         bytes: 5,
         encode: (v) => [0x03, ...word(Math.round(clamp(v, 0, 65535))), ...word(Math.round(clamp(v * 0.6, 0, 65535)))],
     },
+    // Particulate-filter aftertreatment status: no regeneration, byte C carries the normalized trigger.
+    0x8b: {bytes: 7, encode: (v) => [0x51, 0, pct(v)[0], 0, 0, 0, 0]},
     0x8e: {bytes: 1, encode: torque}, // friction torque
     0x9b: {bytes: 7, encode: (v) => [0x0f, 82, 65, Math.round((clamp(v, 0, 100) * 255) / 100), 0, 0, 0]}, // DEF: level in byte D
     0xa4: {bytes: 4, encode: (v) => [0x00, 0x01, ...word(Math.round(clamp(v, 0, 65.535) * 1000))]}, // gear ratio in CD

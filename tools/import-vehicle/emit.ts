@@ -1,4 +1,5 @@
 import type {DriveCycle} from '../../src/core/drive-cycle';
+import type {SignalFits} from '../../src/core/signals';
 import type {VehicleTraits} from '../../src/core/traits';
 import type {VehicleProfile} from '../../src/core/types';
 import type {SimulatorProvenance} from '../../src/simulators/types';
@@ -61,6 +62,7 @@ export function renderProfileModule(profile: VehicleProfile, provenance: Simulat
         profile.protocol ? `protocol: ${quoted(profile.protocol)},` : '',
         renderEcus(profile),
         `supportsPermanentDtcs: ${profile.supportsPermanentDtcs !== false},`,
+        profile.framePadding === undefined ? '' : `framePadding: ${hex(profile.framePadding)},`,
         '};',
         '',
         'export const PROVENANCE: SimulatorProvenance = {',
@@ -75,7 +77,7 @@ export function renderProfileModule(profile: VehicleProfile, provenance: Simulat
         .join('\n');
 }
 
-export function renderDrivingModule(cycle: DriveCycle, traits: Partial<VehicleTraits>): string {
+export function renderDrivingModule(cycle: DriveCycle, traits: Partial<VehicleTraits>, signals: SignalFits = {}): string {
     const channel = (name: keyof DriveCycle): string => {
         const samples = cycle[name];
         return Array.isArray(samples) ? `${name}: [${samples.join(', ')}],` : '';
@@ -83,10 +85,19 @@ export function renderDrivingModule(cycle: DriveCycle, traits: Partial<VehicleTr
     return [
         BANNER,
         "import type {DriveCycle} from '../../core/drive-cycle';",
+        "import type {SignalFits} from '../../core/signals';",
         "import type {VehicleTraits} from '../../core/traits';",
         '',
         'export const TRAITS: Partial<VehicleTraits> = {',
         ...Object.entries(traits).map(([key, value]) => `${key}: ${value},`),
+        '};',
+        '',
+        '// How each PID followed load, rpm and speed in the recordings (least squares; constants where unrelated).',
+        'export const SIGNALS: SignalFits = {',
+        ...Object.entries(signals).map(
+            ([pid, fit]) =>
+                `${hex(Number(pid))}: {base: ${fit.base}, perLoadPct: ${fit.perLoadPct}, perKrpm: ${fit.perKrpm}, perKmh: ${fit.perKmh}, min: ${fit.min}, max: ${fit.max}, noise: ${fit.noise}},`,
+        ),
         '};',
         '',
         `// ${cycle.speedKmh.length} samples, ${cycle.stepSeconds} s apart, starting and ending at standstill.`,

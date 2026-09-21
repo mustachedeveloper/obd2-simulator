@@ -6,7 +6,8 @@ import {renderDrivingModule, renderProfileModule} from './emit';
 import {buildIdentity} from './identity';
 import {ecuPayloads, requestOf} from './responses';
 import {type Session, readSession} from './session';
-import {deriveTraits} from './traits';
+import {fitSignals} from './signals';
+import {deriveTraits, deriveWarmup} from './traits';
 
 // Dev-only tool (never published): turns a directory of AutoPulse wire logs
 // into the generated modules of one simulated vehicle.
@@ -115,7 +116,20 @@ function run(options: Options): void {
     const samples = sessions.flatMap((session) => session.samples);
 
     const identity = buildIdentity(exchanges, {name: options.name, vinSerial: options.vinSerial});
-    const traits = deriveTraits(samples);
+    const measured = deriveTraits(samples);
+    const traits = {
+        ...measured,
+        ...(measured.coolantTargetC === undefined
+            ? {}
+            : deriveWarmup(
+                  sessions.map((session) => session.samples),
+                  measured.coolantTargetC,
+              )),
+    };
+    const {signals, diagnosis} = fitSignals(
+        sessions.map((session) => session.samples),
+        identity.profile.pids,
+    );
     const cycle = buildCycle(
         sessions.map((session) => toSeries(session.samples)),
         {seconds: options.cycleSeconds, minTopSpeedKmh: options.minTopSpeedKmh},
@@ -132,7 +146,7 @@ function run(options: Options): void {
     const secrets = [...identity.secrets, ...sessions.flatMap((session) => session.secrets)];
     const modules = {
         'profile.ts': renderProfileModule(identity.profile, provenance),
-        'driving.ts': renderDrivingModule(cycle, traits),
+        'driving.ts': renderDrivingModule(cycle, traits, signals),
     };
     for (const source of Object.values(modules)) assertNoLeak(source, secrets);
 
@@ -150,6 +164,16 @@ function run(options: Options): void {
         console.log('note: the vehicle refuses mode 04 while running (7F0422) — consider clearRequiresEngineOff');
     }
     console.log(`traits: ${JSON.stringify(traits)}`);
+    const fittedPids = Object.keys(signals).map(Number);
+    const sloped = fittedPids.filter((pid) => {
+        const fit = signals[pid];
+        return fit !== undefined && (fit.perLoadPct !== 0 || fit.perKrpm !== 0 || fit.perKmh !== 0);
+    });
+    for (const line of diagnosis) {
+        const explained = line.rSquared === null ? '   —' : line.rSquared.toFixed(2);
+        console.log(`  PID ${hexPids([line.pid])}  n=${String(line.samples).padStart(6)}  R²=${explained}  → ${line.outcome}`);
+    }
+    console.log(`signals: ${fittedPids.length} fitted (${hexPids(sloped)} follow the driving state, the rest are constants)`);
     const standstill = cycle.speedKmh.filter((speed) => speed < 1).length / cycle.speedKmh.length;
     const meanSpeed = cycle.speedKmh.reduce((sum, speed) => sum + speed, 0) / cycle.speedKmh.length;
     console.log(

@@ -110,6 +110,13 @@ export interface VehicleProfile {
      */
     supportsPermanentDtcs?: boolean;
     /**
+     * Byte the ECUs fill unused CAN frame bytes with (commonly 0xAA). Shows
+     * up as the tail of the last 'N:' segment of a multi-frame response and,
+     * with headers on, in every frame. Absent → no padding (raw frames are
+     * zero-filled).
+     */
+    framePadding?: number;
+    /**
      * true → mode 04 is refused with 7F 04 22 (conditions not correct) while
      * the engine runs, as many real vehicles do; key-on, engine-off clears.
      * Default false.
@@ -271,6 +278,13 @@ export interface AdapterPersona {
      * Blank line before the reset banner (genuine behaviour). Default true.
      */
     bannerBlankLine?: boolean;
+    /**
+     * true → the last 'N:' segment of a multi-frame response is cut to the
+     * announced length, hiding the vehicle's frame padding (seen on v2.1
+     * clones). Default false: the whole consecutive frame is printed, as
+     * genuine chips and the vLinker do.
+     */
+    trimsFramePadding?: boolean;
 }
 
 export type AdaptiveTimingMode = 0 | 1 | 2;

@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {DIESEL_PROFILE, SimulatorEngine, dieselDrivingModel} from '../src/index';
+import {DEFAULT_ADAPTER, DIESEL_PROFILE, SimulatorEngine, dieselDrivingModel} from '../src/index';
 import {SYNTHETIC_GASOLINE_PROFILE} from './helpers/synthetic';
 
 // '00A\r0:…\r1:…' → contiguous payload hex (single lines pass through).
@@ -133,6 +133,33 @@ describe('DTC lifecycle', () => {
         expect(engine.handleCommand('03')).toBe('4300');
         expect(engine.handleCommand('07')).toBe('4700');
         expect(engine.handleCommand('0A')).toBe('4A010420');
+    });
+});
+
+describe('frame padding', () => {
+    it('rejects a padding value that is not a byte', () => {
+        expect(() => new SimulatorEngine({profile: {...SYNTHETIC_GASOLINE_PROFILE, framePadding: 256}})).toThrow('framePadding');
+        expect(() => new SimulatorEngine({profile: {...SYNTHETIC_GASOLINE_PROFILE, framePadding: 1.5}})).toThrow('framePadding');
+    });
+
+    it('fills the last segment of a multi-frame response and raw frames', () => {
+        const engine = engineAt(0, {profile: {...SYNTHETIC_GASOLINE_PROFILE, framePadding: 0xaa}});
+        const vin = engine.handleCommand('0902').split('\r');
+        expect(vin[vin.length - 1]).toMatch(/^2:[0-9A-F]{14}$/);
+        expect(engine.handleCommand('0904').split('\r').pop()).toMatch(/^2:[0-9A-F]{12}AA$/);
+        expect(engine.handleCommand('010C')).toMatch(/^410C[0-9A-F]{4}$/);
+        engine.handleCommand('ATH1');
+        expect(engine.handleCommand('010C')).toMatch(/^7E804410C[0-9A-F]{4}AAAAAA$/);
+    });
+
+    it('is hidden by adapters that cut the last segment, but not in raw frames', () => {
+        const engine = engineAt(0, {
+            profile: {...SYNTHETIC_GASOLINE_PROFILE, framePadding: 0xaa},
+            adapter: {...DEFAULT_ADAPTER, trimsFramePadding: true},
+        });
+        expect(engine.handleCommand('0904').split('\r').pop()).toMatch(/^2:[0-9A-F]{12}$/);
+        engine.handleCommand('ATH1');
+        expect(engine.handleCommand('010C')).toMatch(/^7E804410C[0-9A-F]{4}AAAAAA$/);
     });
 });
 

@@ -23,6 +23,19 @@ const INFOTYPE = {vin: 0x02, calibrationId: 0x04, cvn: 0x06, name: 0x0a} as cons
 
 const padded = (text: string, length: number): number[] => asciiBytes(text.padEnd(length, '\0'));
 
+const ACRONYM_BYTES = 4;
+const NAMED_ECU = /^([A-Za-z0-9]{1,4})-(.*)$/;
+
+// SAE J1979 ECUNAME: a 4-byte acronym field (NUL-filled: 'ECM\0'), the '-'
+// delimiter, then the text — 'ECM-EngineControl' goes out as
+// 45 43 4D 00 2D 45 6E …, which is what vehicles send. Names without an
+// acronym are sent as they are.
+function ecuNameBytes(name: string): number[] {
+    const match = NAMED_ECU.exec(name);
+    const text = match ? `${(match[1] ?? '').padEnd(ACRONYM_BYTES, '\0')}-${match[2] ?? ''}` : name;
+    return padded(text.slice(0, ECU_NAME_BYTES), ECU_NAME_BYTES);
+}
+
 function servedInfotypes(source: VehicleInfoSource): Set<number> {
     const served = new Set<number>();
     if (source.vin) served.add(INFOTYPE.vin);
@@ -46,7 +59,7 @@ function payloadFor(source: VehicleInfoSource, infotype: number): number[] | nul
         case INFOTYPE.cvn:
             return [SERVICE, infotype, 0x01, ...hexToBytes(source.cvn!)];
         case INFOTYPE.name:
-            return [SERVICE, infotype, 0x01, ...padded(source.name!, ECU_NAME_BYTES)];
+            return [SERVICE, infotype, 0x01, ...ecuNameBytes(source.name!)];
         default: {
             const {counters} = source.performance!;
             const words = counters.flatMap((value) => [Math.floor(value / 256) & 0xff, value & 0xff]);

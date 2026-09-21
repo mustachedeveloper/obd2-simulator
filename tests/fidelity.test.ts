@@ -123,8 +123,8 @@ describe('29-bit CAN addressing', () => {
     it('prints 29-bit response headers for ISO 15765-4 CAN 29 vehicles', () => {
         const reference = engineWith(VLINKER_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP7', 'ATH1']);
         const rpm = lines(reference.handleCommand('010C'));
-        expect(rpm[0]).toMatch(/^18DAF11004410C[0-9A-F]{4}000000$/);
-        expect(rpm[1]).toMatch(/^18DAF11804410C[0-9A-F]{4}000000$/);
+        expect(rpm[0]).toMatch(/^18DAF11004410C[0-9A-F]{4}AAAAAA$/);
+        expect(rpm[1]).toMatch(/^18DAF11804410C[0-9A-F]{4}AAAAAA$/);
         reference.handleCommand('ATS1');
         expect(lines(reference.handleCommand('010C'))[0]).toMatch(/^18 DA F1 10 04 41 0C /);
     });
@@ -163,7 +163,7 @@ describe('multi-ECU vehicles (profile-defined)', () => {
         reference.injectDtc('P0301');
         expect(reference.handleCommand('03')).toBe('43010301\r7F0310\r4300');
         reference.handleCommand('ATH1');
-        expect(lines(reference.handleCommand('03'))[1]).toMatch(/^18DAF1..037F031000000000$/);
+        expect(lines(reference.handleCommand('03'))[1]).toMatch(/^18DAF1..037F0310AAAAAAAA$/);
     });
 
     it('answers NO DATA for permanent codes on vehicles without mode 0A', () => {

@@ -28,6 +28,21 @@ function dataLines(command: string, response: string): string[] {
 }
 
 /**
+ * The byte a multi-frame response's last segment is filled with beyond the
+ * announced length ('AA'), or null when this response shows none.
+ */
+export function framePaddingOf(command: string, response: string): string | null {
+    const lines = dataLines(command, response);
+    const announced = LENGTH_LINE.test(lines[0] ?? '') ? Number.parseInt(lines[0] ?? '', 16) * 2 : 0;
+    const segments = lines.slice(1).map((line) => SEGMENT_LINE.exec(line)?.[2] ?? null);
+    // One responder only, so the segments are unambiguous.
+    if (announced === 0 || segments.includes(null)) return null;
+    const tail = segments.join('').slice(announced);
+    const [first = ''] = tail.match(/^../) ?? [];
+    return tail.length > 0 && tail === first.repeat(tail.length / 2) ? first : null;
+}
+
+/**
  * Hex payload per responding ECU, in the order printed. Empty when the
  * adapter reported an error or the response is incomplete.
  */

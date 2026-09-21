@@ -1,13 +1,15 @@
 import {type DriveCycle, type DriveCyclePlayer, type DrivingState, createDriveCyclePlayer} from './drive-cycle';
+import {type SignalFit, type SignalFits, evaluateSignal, resolveSignals} from './signals';
 import {type VehicleTraits, resolveTraits} from './traits';
 import type {DrivingModel} from './types';
 
 // The default driving cycle: 20s idle → 8s acceleration → cruise at
 // ~90 km/h → deceleration, repeating every 96s. Coolant/oil warm up along
 // exponential curves, fuel burns down slowly. Deliberately simple and fully
-// deterministic given the same jitter stream. Two options make it a specific
-// vehicle: `traits` (measured constants) and `cycle` (a recorded drive that
-// replaces the synthetic one); every other signal is derived from the same
+// deterministic given the same jitter stream. Three options make it a
+// specific vehicle: `traits` (measured constants), `cycle` (a recorded drive
+// that replaces the synthetic one) and `signals` (per-PID fits that replace
+// the generic formulas); every other signal is derived from the same
 // driving state either way, so the PIDs always agree with each other.
 
 const IDLE_END_S = 20;
@@ -17,9 +19,15 @@ const CYCLE_LENGTH_S = 96;
 
 const CRUISE_SPEED_KMH = 90;
 const OIL_WARMUP_LAG = 1.6;
-const OIL_OVER_COOLANT_C = 8;
 const FUEL_START_PCT = 62;
 const FUEL_BURN_PCT_PER_HOUR = 6;
+
+// Wide-band sensors and the commanded ratio read full lean while the
+// injectors are shut (fuel cut on overrun): the top of the 0..2 scale.
+const LAMBDA_PIDS: ReadonlySet<number> = new Set([0x24, 0x34, 0x44]);
+const FUEL_CUT_LAMBDA = 1.99997;
+// One-second means, interpolated: "zero" load is anything below half a percent.
+const FUEL_CUT_MAX_LOAD_PCT = 0.5;
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 
@@ -57,6 +65,13 @@ export interface DefaultDrivingModelOptions {
      * Its samples are used as they are — no jitter is added on top.
      */
     cycle?: DriveCycle;
+    /**
+     * Per-PID fits from recordings; a fitted PID no longer uses the generic
+     * formula. What the cycle replays or the model accumulates (rpm, speed,
+     * load, throttle, fuel rate, run time, distances, fuel level, odometer)
+     * cannot be fitted and is ignored here.
+     */
+    signals?: SignalFits;
 }
 
 // What the engine-derived sensors read with the combustion engine stopped.
@@ -100,9 +115,10 @@ export class DefaultDrivingModel implements DrivingModel {
     private readonly engineOffAtStandstill: boolean;
     private readonly traits: VehicleTraits;
     private readonly player: DriveCyclePlayer | null;
+    private readonly signals: ReadonlyMap<number, SignalFit>;
 
     /**
-     * @throws if a trait is out of range or the drive cycle is malformed.
+     * @throws if a trait is out of range, the drive cycle or a signal fit is malformed.
      */
     constructor(options: DefaultDrivingModelOptions = {}) {
         this.fuelType = options.fuelType ?? 1;
@@ -110,14 +126,18 @@ export class DefaultDrivingModel implements DrivingModel {
         this.engineOffAtStandstill = options.engineOffAtStandstill ?? false;
         this.traits = resolveTraits(options.traits);
         this.player = options.cycle ? createDriveCyclePlayer(options.cycle) : null;
+        this.signals = resolveSignals(options.signals);
     }
 
     value(pid: number, elapsedSeconds: number, jitter: (amplitude: number) => number): number | null {
         const state = this.drivingState(elapsedSeconds, jitter);
-        const {coolantStartC, coolantTargetC, coolantWarmupTauS} = this.traits;
+        const {coolantStartC, coolantTargetC, coolantWarmupTauS, oilOverCoolantC} = this.traits;
         const warmup = 1 - Math.exp(-elapsedSeconds / coolantWarmupTauS);
         const engineOff = state.rpm === 0 ? ENGINE_OFF_VALUES[pid] : undefined;
         if (engineOff !== undefined) return engineOff;
+        if (LAMBDA_PIDS.has(pid) && this.fuelCut(state)) return FUEL_CUT_LAMBDA;
+        const fit = this.signals.get(pid);
+        if (fit) return evaluateSignal(fit, state, jitter);
         switch (pid) {
             case 0x03:
                 // Open loop while warming up, closed loop after.
@@ -153,6 +173,8 @@ export class DefaultDrivingModel implements DrivingModel {
                 return clamp(1 + jitter(0.05), 0, 2); // O2 S1 lambda
             case 0x25:
                 return clamp(1 + jitter(0.03), 0, 2); // O2 S2 lambda
+            case 0x34:
+                return clamp(1 + jitter(0.05), 0, 2); // O2 S1 lambda (with pump current)
             case 0x2c:
                 return state.engineLoadPct > 50 ? 0 : 8 + jitter(2); // commanded EGR
             case 0x2d:
@@ -226,6 +248,11 @@ export class DefaultDrivingModel implements DrivingModel {
                 return clamp(30 - state.engineLoadPct * 0.2, 0, 100); // EGR packet (commanded)
             case 0x6f:
                 return 101 + jitter(0.5); // turbo inlet pressure
+            case 0x70:
+                // Boost: follows the manifold — vacuum off load, above atmospheric under it.
+                return clamp(95 + state.engineLoadPct * 0.6 + jitter(2), 90, 250);
+            case 0x71:
+                return clamp(state.engineLoadPct * 0.4 + jitter(1), 0, 100); // wastegate / VGT position
             case 0x73:
                 return 105 + state.engineLoadPct * 0.3 + jitter(1); // exhaust pressure
             case 0x74:
@@ -240,6 +267,8 @@ export class DefaultDrivingModel implements DrivingModel {
                 return 300 + state.engineLoadPct * 2 + jitter(10); // DPF temp
             case 0x83:
                 return clamp(120 + state.engineLoadPct * 3 + jitter(10), 0, 3000); // NOx ppm
+            case 0x8b:
+                return 0; // aftertreatment: no regeneration pending
             case 0x8e:
                 return -12 + jitter(1); // friction torque
             case 0x9b:
@@ -292,7 +321,7 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x5c: {
                 // Oil warms slower than coolant and settles a bit hotter.
                 const oilWarmup = 1 - Math.exp(-elapsedSeconds / (coolantWarmupTauS * OIL_WARMUP_LAG));
-                return coolantStartC + (coolantTargetC + OIL_OVER_COOLANT_C - coolantStartC) * oilWarmup + jitter(0.5);
+                return coolantStartC + (coolantTargetC + oilOverCoolantC - coolantStartC) * oilWarmup + jitter(0.5);
             }
             case 0x62:
                 // Torque roughly tracks load; idles slightly positive.
@@ -300,6 +329,14 @@ export class DefaultDrivingModel implements DrivingModel {
             default:
                 return null;
         }
+    }
+
+    // Overrun: the engine turns and the car rolls, but the recorded load is
+    // zero. Load, not fuel rate: in recordings zero load marks 90 % of the
+    // full-lean readings, while the fuel-rate PID lags behind the injectors
+    // and marks only 60 %. Only a recorded cycle can show it.
+    private fuelCut(state: DrivingState): boolean {
+        return this.player !== null && state.engineLoadPct < FUEL_CUT_MAX_LOAD_PCT && state.rpm > 0 && state.speedKmh > 0;
     }
 
     private distanceKm(elapsedSeconds: number): number {
