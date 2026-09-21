@@ -27,11 +27,11 @@ npm install obd2-simulator
 import {MemoryLink, SimulatorEngine} from 'obd2-simulator';
 
 const link = new MemoryLink(new SimulatorEngine({seed: 7}));
-link.onData((chunk) => console.log(chunk)); // '410C1AF8\r\r>'
+link.onData((chunk) => console.log(chunk)); // '410C0EE4\r\r>'
 await link.connect();
 await link.write('ATZ');
 await link.write('ATE0');
-await link.write('010C'); // engine RPM
+await link.write('010C 1'); // engine RPM, first responder only
 ```
 
 Or drive the engine directly, no transport:
@@ -43,16 +43,18 @@ const engine = new SimulatorEngine();
 engine.handleCommand('ATE0');
 engine.handleCommand('0902');   // VIN, ISO-TP framed: '014\r0:490201…'
 engine.injectDtc('P0301');      // freeze frame snapshots automatically
-engine.handleCommand('03');     // '43010301'
+engine.handleCommand('03');     // '43010301\r7F0310\r4300' — one line per ECU of the default car
 engine.injectDtc('garbage');    // throws: invalid DTC "garbage" (expected e.g. P0301)
-engine.execute('010C').wire;    // exact bytes incl. prompt: '410C1AF8\r\r>'
+engine.execute('010C 1').wire;  // exact bytes incl. prompt: '410C0EE4\r\r>' (hint 1 → first responder only)
 ```
 
 ## Quick start — fake WiFi adapter (any OBD app)
 
 ```sh
-npx obd2-simulator --port 35000 --profile diesel --dtc P0301
-npx obd2-simulator --host 127.0.0.1 --profile reference --adapter clone   # local-only, 2-ECU car behind a cheap clone
+npx obd2-simulator                                                   # the default gasoline simulator on port 35000
+npx obd2-simulator --simulator default-diesel --dtc P0301
+npx obd2-simulator --host 127.0.0.1 --adapter clone                  # local-only, behind a cheap clone
+npx obd2-simulator --list-simulators
 ```
 
 Point any OBD application (Car Scanner, Torque, your own) at `<host>:35000` as a **WiFi ELM327 adapter** and it will see a live fake vehicle. Each client connection gets its own vehicle instance. The server binds `0.0.0.0` by default (that is the point of impersonating a WiFi dongle) — pass `--host 127.0.0.1` to keep it on your machine. `Ctrl+C` shuts it down.
@@ -90,17 +92,37 @@ const server = createTcpServer({
 | Mode 06 | On-board monitor test records (MID/TID/UAS/value/limits) |
 | Mode 09 | `0900` mask, VIN, calibration ID, CVN, ECU name (per ECU), in-use performance counters (spark `08` / diesel `0B`) — ISO-TP framed |
 | Negative responses | Any other hex request (UDS `22…`, `19…`, mode `05`) is rejected with `7F <sid> 11`; only non-hex input gets `?` |
-| Driving model | 96s cycle: idle → acceleration → ~90 km/h cruise → deceleration; exponential coolant/oil warm-up, gear-aware RPM, fuel burn |
+| Driving model | Default gasoline: a recorded 15-minute real drive replayed in a loop. Others: synthetic 96s cycle (idle → acceleration → ~90 km/h cruise → deceleration). Exponential coolant/oil warm-up, fuel burn; every other signal derived from the same driving state |
+
+## Choosing a simulator
+
+A *simulator* is a vehicle profile together with the driving model that belongs to it, selectable by id. With no selection the default gasoline simulator runs.
+
+```ts
+import {createSimulator, listSimulators} from 'obd2-simulator';
+
+createSimulator();                                    // 'default-gasoline'
+createSimulator('default-diesel', {seed: 7});         // any SimulatorEngine option except `profile`
+listSimulators().map((simulator) => simulator.id);    // ['default-gasoline', 'default-diesel']
+```
+
+| Id | Kind | Vehicle |
+|----|------|---------|
+| `default-gasoline` | recorded | A real 2025 spark-ignition car: engine ECU + transmission ECU + a module that rejects DTC requests, CAN 29/500, 47 PIDs, its real readiness bytes, 28 in-use counters, mode 06 results and ECU identities (only the VIN serial is synthetic), replaying a real town-and-country drive with the car's measured idle speed, operating temperature, charging voltage and fuel trim |
+| `default-diesel` | synthetic | Compression-ignition car with the diesel pack (turbo, EGT, DPF, NOx, DEF) on the synthetic cycle |
+
+`new SimulatorEngine()` without options *is* the default gasoline simulator; passing a `profile` without a `model` gives that vehicle the synthetic cycle. `getSimulator(id)` returns the definition (`profile`, `createModel()`, `kind`, `provenance`); `createSimulator` also accepts a definition of your own. Bundle-conscious apps can import one definition (`DEFAULT_DIESEL_SIMULATOR`) and pass it instead of an id, so the registry — and the recorded drive of other vehicles — can be tree-shaken.
+
+Recorded vehicles are generated from wire logs by `npm run import-vehicle`; see [docs/ADDING-A-VEHICLE.md](./docs/ADDING-A-VEHICLE.md).
 
 ## Vehicle profiles
 
 A vehicle is pure data — `VehicleProfile` is JSON-compatible. The profile *is* the engine ECU (`7E8`); other modules are `additionalEcus`.
 
 ```ts
-import {DIESEL_PROFILE, GASOLINE_PROFILE, REFERENCE_PROFILE, SimulatorEngine, dieselDrivingModel} from 'obd2-simulator';
+import {DIESEL_PROFILE, GASOLINE_PROFILE, SimulatorEngine, dieselDrivingModel} from 'obd2-simulator';
 
 new SimulatorEngine({profile: DIESEL_PROFILE, model: dieselDrivingModel()});
-new SimulatorEngine({profile: REFERENCE_PROFILE}); // 2-ECU CAN 29-bit car the adapter personas were measured on
 
 // or roll your own:
 new SimulatorEngine({
@@ -110,6 +132,7 @@ new SimulatorEngine({
         storedDtcs: ['P0420'],
         protocol: '7',                       // ISO 15765-4 CAN 29/500 → 18DAF1xx headers, ATDPN 'A7'
         supportsPermanentDtcs: false,        // mode 0A → NO DATA
+        clearRequiresEngineOff: true,        // mode 04 → 7F 04 22 while running (the recorded car does this)
         additionalEcus: [
             {id: '7E9', name: 'TCM', pids: [0x0c, 0x0d], readiness: [0x04, 0, 0], calibrationId: 'TCM-CAL-01', cvn: 'A9C9EF55'},
             {id: '7EA', pids: [], dtcReply: 'reject'}, // answers 03/07 with 7F xx 10 only
@@ -120,12 +143,23 @@ new SimulatorEngine({
 
 | Profile | Vehicle |
 |---------|---------|
-| `GASOLINE_PROFILE` | Spark-ignition passenger car, one ECU, CAN 11/500, broad PID set |
+| `GASOLINE_PROFILE` | The recorded car of `default-gasoline`. Pair it with `gasolineDrivingModel()` for its recorded drive — a profile passed without a `model` always gets the synthetic cycle; `createSimulator()` pairs them for you |
 | `DIESEL_PROFILE` | Compression-ignition car with the diesel pack (turbo, EGT, DPF, NOx, DEF) |
 | `HYBRID_PROFILE` | Gasoline hybrid: spark-ignition set + battery pack (`0x5B`), fuel type hybrid, engine off at standstill (`hybridDrivingModel()`) |
-| `REFERENCE_PROFILE` | 2011 Škoda on CAN 29/500: engine + transmission ECU + a module rejecting DTC requests, no mode 0A — matches the wire-log recordings |
+| `REFERENCE_PROFILE` | The same car as `GASOLINE_PROFILE` under its original name — kept for compatibility |
 
-Custom driving behavior is one interface away:
+The default model takes a vehicle's measured constants and a recorded drive, which is how recorded simulators are built:
+
+```ts
+import {DefaultDrivingModel} from 'obd2-simulator';
+
+new DefaultDrivingModel({
+    traits: {idleRpm: 930, coolantTargetC: 93},              // unset traits keep their defaults
+    cycle: {stepSeconds: 1, speedKmh: [...], rpm: [...], throttlePct: [...], engineLoadPct: [...]},
+});
+```
+
+Fully custom driving behavior is one interface away:
 
 ```ts
 import type {DrivingModel} from 'obd2-simulator';

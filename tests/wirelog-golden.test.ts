@@ -46,12 +46,14 @@ const shape = (text: string, command: string): string[] =>
         .filter((line) => line.length > 0 && line !== command)
         .map(maskLine);
 
-// Vehicle quirks the simulator deliberately does not reproduce.
+// Adapter quirks the simulator deliberately does not reproduce.
 const KNOWN_DEVIATIONS: Readonly<Record<string, string>> = {
-    // The engine ECU pads its 27-byte in-use performance record with a fifth,
-    // all-zero consecutive frame; the simulator sends exactly the payload.
-    '0908': 'extra zero-padding frame',
+    // The vehicle sends 59 bytes (28 in-use counters, length line 03B, as the
+    // vLinker recordings show); the clone cuts the response off after five
+    // frames and announces 01B. The simulator always prints the full record.
+    '0908': 'clone truncates long multi-frame responses',
 };
+const LENGTH_LINE = /^[0-9A-F]{3}$/;
 
 function replay(name: string, adapter: AdapterPersona): void {
     const entries = fixture(name);
@@ -59,7 +61,8 @@ function replay(name: string, adapter: AdapterPersona): void {
     for (const entry of entries) {
         const simulated = engine.execute(entry.c);
         if (entry.c in KNOWN_DEVIATIONS) {
-            expect(shape(simulated.response, entry.c)[0], `${name}: ${entry.c} length line`).toBe(shape(entry.r, entry.c)[0]);
+            expect(shape(simulated.response, entry.c)[0], `${name}: ${entry.c} length line`).toMatch(LENGTH_LINE);
+            expect(shape(entry.r, entry.c)[0], `${name}: ${entry.c} recorded length line`).toMatch(LENGTH_LINE);
             continue;
         }
         expect(shape(simulated.response, entry.c), `${name}: ${entry.c}`).toEqual(shape(entry.r, entry.c));

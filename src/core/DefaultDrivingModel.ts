@@ -1,9 +1,14 @@
+import {type DriveCycle, type DriveCyclePlayer, type DrivingState, createDriveCyclePlayer} from './drive-cycle';
+import {type VehicleTraits, resolveTraits} from './traits';
 import type {DrivingModel} from './types';
 
 // The default driving cycle: 20s idle → 8s acceleration → cruise at
 // ~90 km/h → deceleration, repeating every 96s. Coolant/oil warm up along
 // exponential curves, fuel burns down slowly. Deliberately simple and fully
-// deterministic given the same jitter stream.
+// deterministic given the same jitter stream. Two options make it a specific
+// vehicle: `traits` (measured constants) and `cycle` (a recorded drive that
+// replaces the synthetic one); every other signal is derived from the same
+// driving state either way, so the PIDs always agree with each other.
 
 const IDLE_END_S = 20;
 const ACCEL_END_S = 28;
@@ -11,21 +16,12 @@ const CRUISE_END_S = 88;
 const CYCLE_LENGTH_S = 96;
 
 const CRUISE_SPEED_KMH = 90;
-const IDLE_RPM = 800;
-const COOLANT_START_C = 22;
-const COOLANT_TARGET_C = 90;
-const COOLANT_WARMUP_TAU_S = 150;
+const OIL_WARMUP_LAG = 1.6;
+const OIL_OVER_COOLANT_C = 8;
 const FUEL_START_PCT = 62;
 const FUEL_BURN_PCT_PER_HOUR = 6;
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
-
-interface DrivingState {
-    speedKmh: number;
-    rpm: number;
-    throttlePct: number;
-    engineLoadPct: number;
-}
 
 // Rough gear-dependent rpm-per-km/h so RPM drops on upshifts instead of
 // climbing linearly to redline.
@@ -52,6 +48,15 @@ export interface DefaultDrivingModelOptions {
      * battery voltage instead of alternator voltage).
      */
     engineOffAtStandstill?: boolean;
+    /**
+     * Measured constants of a specific vehicle; unset ones keep the default.
+     */
+    traits?: Partial<VehicleTraits>;
+    /**
+     * A recorded drive replayed in a loop instead of the synthetic cycle.
+     * Its samples are used as they are — no jitter is added on top.
+     */
+    cycle?: DriveCycle;
 }
 
 // What the engine-derived sensors read with the combustion engine stopped.
@@ -68,7 +73,7 @@ const ENGINE_OFF_VALUES: Readonly<Record<number, number>> = {
 // One full 96s cycle covers 0.1 (accel) + 1.5 (cruise) + 0.1 (decel) km.
 const CYCLE_DISTANCE_KM = 1.7;
 
-function distanceKm(elapsedSeconds: number): number {
+function syntheticDistanceKm(elapsedSeconds: number): number {
     const s = Math.max(0, elapsedSeconds);
     const fullCycles = Math.floor(s / CYCLE_LENGTH_S);
     const t = s % CYCLE_LENGTH_S;
@@ -93,16 +98,24 @@ export class DefaultDrivingModel implements DrivingModel {
     private readonly fuelType: number;
     private readonly odometerKm: number;
     private readonly engineOffAtStandstill: boolean;
+    private readonly traits: VehicleTraits;
+    private readonly player: DriveCyclePlayer | null;
 
+    /**
+     * @throws if a trait is out of range or the drive cycle is malformed.
+     */
     constructor(options: DefaultDrivingModelOptions = {}) {
         this.fuelType = options.fuelType ?? 1;
         this.odometerKm = options.odometerKm ?? 84_213;
         this.engineOffAtStandstill = options.engineOffAtStandstill ?? false;
+        this.traits = resolveTraits(options.traits);
+        this.player = options.cycle ? createDriveCyclePlayer(options.cycle) : null;
     }
 
     value(pid: number, elapsedSeconds: number, jitter: (amplitude: number) => number): number | null {
         const state = this.drivingState(elapsedSeconds, jitter);
-        const warmup = 1 - Math.exp(-elapsedSeconds / COOLANT_WARMUP_TAU_S);
+        const {coolantStartC, coolantTargetC, coolantWarmupTauS} = this.traits;
+        const warmup = 1 - Math.exp(-elapsedSeconds / coolantWarmupTauS);
         const engineOff = state.rpm === 0 ? ENGINE_OFF_VALUES[pid] : undefined;
         if (engineOff !== undefined) return engineOff;
         switch (pid) {
@@ -110,7 +123,7 @@ export class DefaultDrivingModel implements DrivingModel {
                 // Open loop while warming up, closed loop after.
                 return warmup > 0.3 ? 2 : 1;
             case 0x07:
-                return 2 + jitter(1); // LTFT B1
+                return this.traits.longTermFuelTrimPct + jitter(1); // LTFT B1
             case 0x08:
                 return jitter(4); // STFT B2
             case 0x09:
@@ -149,7 +162,7 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x30:
                 return 42; // warm-ups since clear
             case 0x31:
-                return 1200 + distanceKm(elapsedSeconds); // distance since clear
+                return 1200 + this.distanceKm(elapsedSeconds); // distance since clear
             case 0x32:
                 return -100 + jitter(50); // evap vapor pressure (Pa)
             case 0x3c:
@@ -193,7 +206,10 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x5d:
                 return 2 + state.engineLoadPct * 0.1 + jitter(0.5); // injection timing
             case 0x5e:
-                return clamp(0.5 + state.engineLoadPct * 0.12 + state.speedKmh * 0.04, 0, 60); // fuel rate
+                return (
+                    this.player?.fuelRateAt(elapsedSeconds) ??
+                    clamp(0.5 + state.engineLoadPct * 0.12 + state.speedKmh * 0.04, 0, 60)
+                ); // fuel rate
             case 0x61:
                 return clamp(state.engineLoadPct + 5, -125, 130); // demanded torque
             case 0x63:
@@ -203,9 +219,9 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x66:
                 return clamp(2 + (state.rpm / 1000) * (state.engineLoadPct / 8) + jitter(0.5), 0, 300); // MAF sensors
             case 0x67:
-                return COOLANT_START_C + (COOLANT_TARGET_C - COOLANT_START_C) * warmup + jitter(0.5);
+                return coolantStartC + (coolantTargetC - coolantStartC) * warmup + jitter(0.5);
             case 0x68:
-                return 25 + jitter(1.5); // IAT sensors
+                return this.traits.intakeTempC + jitter(1.5); // IAT sensors
             case 0x69:
                 return clamp(30 - state.engineLoadPct * 0.2, 0, 100); // EGR packet (commanded)
             case 0x6f:
@@ -234,16 +250,14 @@ export class DefaultDrivingModel implements DrivingModel {
                  * standstill (matches vehicles that gate it on motion).
                  */
                 if (state.speedKmh < 1) return null;
-                return gearFactor(state.speedKmh) / 24;
+                return (this.player ? state.rpm / state.speedKmh : gearFactor(state.speedKmh)) / 24;
             }
             case 0xa6:
-                return this.odometerKm + distanceKm(elapsedSeconds); // odometer
+                return this.odometerKm + this.distanceKm(elapsedSeconds); // odometer
             case 0x04:
                 return state.engineLoadPct;
-            case 0x05: {
-                const warmup = 1 - Math.exp(-elapsedSeconds / COOLANT_WARMUP_TAU_S);
-                return COOLANT_START_C + (COOLANT_TARGET_C - COOLANT_START_C) * warmup + jitter(0.5);
-            }
+            case 0x05:
+                return coolantStartC + (coolantTargetC - coolantStartC) * warmup + jitter(0.5);
             case 0x06:
                 return jitter(4);
             case 0x0b:
@@ -256,7 +270,7 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x0e:
                 return clamp(8 + state.rpm / 400 + jitter(1), -10, 40);
             case 0x0f:
-                return 25 + jitter(1.5);
+                return this.traits.intakeTempC + jitter(1.5);
             case 0x10:
                 // Airflow scales with rpm × load; ~2 g/s idle, ~40+ under load.
                 return clamp(2 + (state.rpm / 1000) * (state.engineLoadPct / 8) + jitter(0.5), 0, 300);
@@ -270,15 +284,15 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x33:
                 return 101 + jitter(0.3);
             case 0x42:
-                return state.rpm > 400 ? 14.1 + jitter(0.1) : 12.4 + jitter(0.1);
+                return state.rpm > 400 ? this.traits.chargingVoltage + jitter(0.1) : 12.4 + jitter(0.1);
             case 0x46:
                 return 22 + jitter(1);
             case 0x51:
                 return this.fuelType;
             case 0x5c: {
                 // Oil warms slower than coolant and settles a bit hotter.
-                const warmup = 1 - Math.exp(-elapsedSeconds / (COOLANT_WARMUP_TAU_S * 1.6));
-                return COOLANT_START_C + (COOLANT_TARGET_C + 8 - COOLANT_START_C) * warmup + jitter(0.5);
+                const oilWarmup = 1 - Math.exp(-elapsedSeconds / (coolantWarmupTauS * OIL_WARMUP_LAG));
+                return coolantStartC + (coolantTargetC + OIL_OVER_COOLANT_C - coolantStartC) * oilWarmup + jitter(0.5);
             }
             case 0x62:
                 // Torque roughly tracks load; idles slightly positive.
@@ -288,7 +302,17 @@ export class DefaultDrivingModel implements DrivingModel {
         }
     }
 
+    private distanceKm(elapsedSeconds: number): number {
+        return this.player ? this.player.distanceKmAt(elapsedSeconds) : syntheticDistanceKm(elapsedSeconds);
+    }
+
     private drivingState(elapsedSeconds: number, jitter: (amplitude: number) => number): DrivingState {
+        if (this.player) {
+            const recorded = this.player.stateAt(elapsedSeconds);
+            const engineOff = recorded.speedKmh < 1 && this.engineOffAtStandstill;
+            return engineOff ? {speedKmh: 0, rpm: 0, throttlePct: 0, engineLoadPct: 0} : recorded;
+        }
+        const idleRpm = this.traits.idleRpm;
         const cycleS = Math.max(0, elapsedSeconds) % CYCLE_LENGTH_S;
 
         let speed: number;
@@ -310,7 +334,7 @@ export class DefaultDrivingModel implements DrivingModel {
         }
 
         if (speed < 1 && this.engineOffAtStandstill) return {speedKmh: 0, rpm: 0, throttlePct: 0, engineLoadPct: 0};
-        const rpm = speed < 1 ? IDLE_RPM + jitter(40) : IDLE_RPM + speed * gearFactor(speed);
+        const rpm = speed < 1 ? idleRpm + jitter(40) : idleRpm + speed * gearFactor(speed);
         return {
             speedKmh: clamp(speed, 0, 240),
             rpm: clamp(rpm, 0, 8000),

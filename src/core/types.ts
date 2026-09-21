@@ -109,6 +109,12 @@ export interface VehicleProfile {
      * false → mode 0A answers NO DATA (many pre-2010 vehicles). Default true.
      */
     supportsPermanentDtcs?: boolean;
+    /**
+     * true → mode 04 is refused with 7F 04 22 (conditions not correct) while
+     * the engine runs, as many real vehicles do; key-on, engine-off clears.
+     * Default false.
+     */
+    clearRequiresEngineOff?: boolean;
 }
 
 /**

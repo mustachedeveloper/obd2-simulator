@@ -2,7 +2,6 @@ import {describe, expect, it} from 'vitest';
 import {
     CLONE_V21_ADAPTER,
     DEFAULT_ADAPTER,
-    GASOLINE_PROFILE,
     GENUINE_ELM_ADAPTER,
     REFERENCE_SECOND_ECU_PIDS,
     SimulatorEngine,
@@ -10,17 +9,18 @@ import {
     VLINKER_ADAPTER,
 } from '../src/index';
 import type {AdapterPersona, DrivingModel, VehicleProfile} from '../src/index';
+import {SYNTHETIC_GASOLINE_PROFILE} from './helpers/synthetic';
 
 // A two-ECU vehicle on 11-bit CAN: the engine plus a transmission ECU
 // serving the reference car's subset.
 const TWO_ECU_PROFILE: VehicleProfile = {
-    ...GASOLINE_PROFILE,
+    ...SYNTHETIC_GASOLINE_PROFILE,
     additionalEcus: [{id: '7E9', pids: REFERENCE_SECOND_ECU_PIDS.filter((pid) => pid % 0x20 !== 0)}],
 };
 
 // Protocol pinned so hardware personas skip the SEARCHING phase.
 const engineWith = (adapter?: AdapterPersona, extra: ConstructorParameters<typeof SimulatorEngine>[0] = {}) => {
-    const engine = new SimulatorEngine({now: () => 0, seed: 7, adapter, ...extra});
+    const engine = new SimulatorEngine({now: () => 0, seed: 7, adapter, profile: SYNTHETIC_GASOLINE_PROFILE, ...extra});
     engine.handleCommand('ATE0');
     engine.handleCommand('ATSP6');
     return engine;
@@ -330,12 +330,12 @@ describe('persona switching', () => {
     });
 
     it('rejects additional ECUs outside the 7E9..7EF response id range', () => {
-        const broken: VehicleProfile = {...GASOLINE_PROFILE, additionalEcus: [{id: '7E8', pids: []}]};
+        const broken: VehicleProfile = {...SYNTHETIC_GASOLINE_PROFILE, additionalEcus: [{id: '7E8', pids: []}]};
         expect(() => new SimulatorEngine({profile: broken})).toThrow(/7E9\.\.7EF/);
     });
 
     it('keeps the default persona identical to the pre-persona behaviour', () => {
-        const engine = new SimulatorEngine({now: () => 0});
+        const engine = new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE});
         expect(engine.handleCommand('ATZ')).toBe('ATZ\r\rELM327 v1.5');
         expect(engine.handleCommand('ATE0')).toBe('ATE0\rOK');
         expect(engine.handleCommand('ATL0')).toBe('OK');

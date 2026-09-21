@@ -1,22 +1,23 @@
 #!/usr/bin/env node
-import {SimulatorEngine} from '../core/SimulatorEngine';
-import {GASOLINE_PROFILE} from '../profiles/gasoline';
-import {DIESEL_PROFILE, dieselDrivingModel} from '../profiles/diesel';
-import {REFERENCE_PROFILE} from '../profiles/reference';
-import {HYBRID_PROFILE, hybridDrivingModel} from '../profiles/hybrid';
-import type {DrivingModel, VehicleProfile} from '../core/types';
+import type {SimulatorEngine} from '../core/SimulatorEngine';
 import {ADAPTER_PRESETS, DEFAULT_ADAPTER} from '../adapters/presets';
+import {createSimulator} from '../simulators/create';
+import {listSimulators} from '../simulators/registry';
 import {createTcpServer} from './tcp-server';
 import {createControlServer} from './control-server';
 import {CONTROL_HELP, applyControlCommand} from './control';
 import {USAGE, parseArgs} from './cli-args';
 
 // Tiny hand-rolled CLI (zero dependencies):
-//   npx obd2-simulator --port 35000 --profile diesel --adapter clone --dtc P0301 --seed 7
+//   npx obd2-simulator --port 35000 --simulator default-diesel --adapter clone --dtc P0301 --seed 7
 
 const parsed = parseArgs(process.argv.slice(2));
 if (parsed.kind === 'help') {
     console.log(USAGE);
+    process.exit(0);
+}
+if (parsed.kind === 'list-simulators') {
+    for (const {id, kind, label, description} of listSimulators()) console.log(`${id}  [${kind}]  ${label} — ${description}`);
     process.exit(0);
 }
 if (parsed.kind === 'error') {
@@ -26,17 +27,7 @@ if (parsed.kind === 'error') {
 }
 
 const {options} = parsed;
-const PROFILES: Record<typeof options.profile, VehicleProfile> = {
-    gasoline: GASOLINE_PROFILE,
-    diesel: DIESEL_PROFILE,
-    reference: REFERENCE_PROFILE,
-    hybrid: HYBRID_PROFILE,
-};
-const MODELS: Partial<Record<typeof options.profile, () => DrivingModel>> = {
-    diesel: dieselDrivingModel,
-    hybrid: hybridDrivingModel,
-};
-const profile = PROFILES[options.profile];
+const {profile} = options.simulator;
 const adapter = ADAPTER_PRESETS[options.adapter] ?? DEFAULT_ADAPTER;
 
 const live = new Set<SimulatorEngine>();
@@ -51,12 +42,7 @@ const server = createTcpServer({
         return () => live.delete(engine);
     },
     engineFactory: () => {
-        const engine = new SimulatorEngine({
-            profile,
-            model: MODELS[options.profile]?.(),
-            adapter,
-            seed: options.seed,
-        });
+        const engine = createSimulator(options.simulator, {adapter, seed: options.seed});
         for (const code of options.dtcs) engine.injectDtc(code);
         for (const line of scenario) applyControlCommand(line, [engine]);
         return engine;

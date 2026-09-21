@@ -2,6 +2,7 @@ import {createConnection} from 'node:net';
 import {describe, expect, it} from 'vitest';
 import {CLONE_V21_ADAPTER, SimulatorEngine} from '../src/index';
 import {createTcpServer} from '../src/node/index';
+import {SYNTHETIC_GASOLINE_PROFILE} from './helpers/synthetic';
 
 const listen = (options: Parameters<typeof createTcpServer>[0]) =>
     new Promise<{server: ReturnType<typeof createTcpServer>; port: number}>((resolve) => {
@@ -19,7 +20,8 @@ const listen = (options: Parameters<typeof createTcpServer>[0]) =>
 describe('TCP server', () => {
     it('answers in order with prompt framing and the persona latency', async () => {
         const {server, port} = await listen({
-            engineFactory: () => new SimulatorEngine({now: () => 0, adapter: CLONE_V21_ADAPTER}),
+            engineFactory: () =>
+                new SimulatorEngine({now: () => 0, adapter: CLONE_V21_ADAPTER, profile: SYNTHETIC_GASOLINE_PROFILE}),
             latencyScale: 0.1,
         });
         const socket = createConnection({port, host: '127.0.0.1'});
@@ -48,7 +50,7 @@ describe('TCP server', () => {
 
     it('discards an oversized line, answers ? and keeps serving', async () => {
         const {server, port} = await listen({
-            engineFactory: () => new SimulatorEngine({now: () => 0}),
+            engineFactory: () => new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE}),
             latencyScale: 0,
             maxLineLength: 32,
         });
@@ -68,7 +70,10 @@ describe('TCP server', () => {
     });
 
     it('reassembles a command that arrives in pieces', async () => {
-        const {server, port} = await listen({engineFactory: () => new SimulatorEngine({now: () => 0}), latencyScale: 0});
+        const {server, port} = await listen({
+            engineFactory: () => new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE}),
+            latencyScale: 0,
+        });
         const socket = createConnection({port, host: '127.0.0.1'});
         let received = '';
         socket.on('data', (chunk) => (received += chunk.toString('ascii')));
@@ -87,7 +92,7 @@ describe('TCP server', () => {
     it('reports client socket errors through onClientError', async () => {
         const errors: string[] = [];
         const {server, port} = await listen({
-            engineFactory: () => new SimulatorEngine({now: () => 0}),
+            engineFactory: () => new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE}),
             onClientError: (remote, error) => errors.push(`${remote.split(':')[0]} ${(error as NodeJS.ErrnoException).code}`),
         });
         const socket = createConnection({port, host: '127.0.0.1'});

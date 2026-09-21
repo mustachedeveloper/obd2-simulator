@@ -2,8 +2,12 @@ import {createConnection} from 'node:net';
 import {describe, expect, it} from 'vitest';
 import {SimulatorEngine} from '../src/index';
 import {applyControlCommand, createControlServer, createTcpServer} from '../src/node/index';
+import {SYNTHETIC_GASOLINE_PROFILE} from './helpers/synthetic';
 
-const engines = () => [new SimulatorEngine({now: () => 0}), new SimulatorEngine({now: () => 0})];
+const engines = () => [
+    new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE}),
+    new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE}),
+];
 
 describe('control commands', () => {
     it('steers every live engine at once', () => {
@@ -68,7 +72,7 @@ describe('control server', () => {
             port: 0,
             host: '127.0.0.1',
             latencyScale: 0,
-            engineFactory: () => new SimulatorEngine({now: () => 0}),
+            engineFactory: () => new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE}),
             onEngine: (engine) => {
                 live.add(engine);
                 return () => live.delete(engine);

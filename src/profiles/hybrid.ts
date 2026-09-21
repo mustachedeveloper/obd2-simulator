@@ -1,7 +1,7 @@
 import {DefaultDrivingModel} from '../core/DefaultDrivingModel';
 import {clamp} from '../core/j1979';
 import type {DrivingModel, VehicleProfile} from '../core/types';
-import {GASOLINE_PROFILE} from './gasoline';
+import {SYNTHETIC_GASOLINE_PROFILE} from './synthetic-gasoline';
 
 // A gasoline hybrid (Toyota-coded VIN): the spark-ignition PID set plus the
 // hybrid battery pack (PID 0x5B), fuel type "hybrid gasoline", and a driving
@@ -13,13 +13,13 @@ const PACK_DRAIN_PCT_PER_HOUR = 3;
 const PID_HYBRID_PACK = 0x5b;
 
 export const HYBRID_PROFILE: VehicleProfile = {
-    ...GASOLINE_PROFILE,
+    ...SYNTHETIC_GASOLINE_PROFILE,
     name: 'hybrid',
     vin: 'JTDKB20U903456789',
     calibrationId: 'OBD2SIM-CAL-0003',
     cvn: '7B1D2E3F',
     ecuName: 'ECM-HybridControl',
-    pids: [...GASOLINE_PROFILE.pids, PID_HYBRID_PACK],
+    pids: [...SYNTHETIC_GASOLINE_PROFILE.pids, PID_HYBRID_PACK],
 };
 
 /**

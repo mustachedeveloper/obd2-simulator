@@ -1,12 +1,13 @@
 import {describe, expect, it} from 'vitest';
 import {MemoryLink, SimulatorEngine, VLINKER_ADAPTER} from '../src/index';
+import {SYNTHETIC_GASOLINE_PROFILE} from './helpers/synthetic';
 
 // The scenario API: everything a test needs to steer the fake vehicle and
 // adapter while an app is talking to it.
 
 const engineAt = (ms: number, extra: ConstructorParameters<typeof SimulatorEngine>[0] = {}) => {
     let current = 0;
-    const engine = new SimulatorEngine({now: () => current, seed: 7, ...extra});
+    const engine = new SimulatorEngine({now: () => current, seed: 7, profile: SYNTHETIC_GASOLINE_PROFILE, ...extra});
     current = ms;
     engine.handleCommand('ATE0');
     return engine;
@@ -207,7 +208,7 @@ describe('MemoryLink fault injection', () => {
         });
 
     it('drops the prompt, truncates or garbles the next responses on request', async () => {
-        const link = new MemoryLink(new SimulatorEngine({now: () => 0}), {
+        const link = new MemoryLink(new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE}), {
             connectDelayMs: 1,
             responseDelayMs: 1,
             jitterMs: 0,
@@ -229,14 +230,18 @@ describe('MemoryLink fault injection', () => {
     });
 
     it('bounds the corruption queue', () => {
-        const link = new MemoryLink(new SimulatorEngine({now: () => 0}));
+        const link = new MemoryLink(new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE}));
         expect(() => link.corruptNext('garbage', 1001)).toThrow(/count/);
         link.corruptNext('garbage', 2);
         expect(link.pendingCorruptions).toEqual(['garbage', 'garbage']);
     });
 
     it('emits the banner unprompted on a simulated adapter reset', async () => {
-        const link = new MemoryLink(new SimulatorEngine({now: () => 0}), {connectDelayMs: 1, responseDelayMs: 1, jitterMs: 0});
+        const link = new MemoryLink(new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE}), {
+            connectDelayMs: 1,
+            responseDelayMs: 1,
+            jitterMs: 0,
+        });
         await link.connect();
         await link.write('ATE0');
         const pending = collect(link, 20);

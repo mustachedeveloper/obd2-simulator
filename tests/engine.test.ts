@@ -1,5 +1,6 @@
 import {describe, expect, it} from 'vitest';
-import {DIESEL_PROFILE, GASOLINE_PROFILE, SimulatorEngine, dieselDrivingModel} from '../src/index';
+import {DIESEL_PROFILE, SimulatorEngine, dieselDrivingModel} from '../src/index';
+import {SYNTHETIC_GASOLINE_PROFILE} from './helpers/synthetic';
 
 // '00A\r0:…\r1:…' → contiguous payload hex (single lines pass through).
 const isoTpPayload = (response: string): string =>
@@ -11,7 +12,7 @@ const isoTpPayload = (response: string): string =>
 
 const engineAt = (ms: number, extra: ConstructorParameters<typeof SimulatorEngine>[0] = {}) => {
     let current = 0;
-    const engine = new SimulatorEngine({now: () => current, seed: 7, ...extra});
+    const engine = new SimulatorEngine({now: () => current, seed: 7, profile: SYNTHETIC_GASOLINE_PROFILE, ...extra});
     current = ms;
     engine.handleCommand('ATE0');
     return engine;
@@ -19,7 +20,7 @@ const engineAt = (ms: number, extra: ConstructorParameters<typeof SimulatorEngin
 
 describe('AT handshake', () => {
     it('answers the init sequence like real hardware, echo included', () => {
-        const engine = new SimulatorEngine({now: () => 0});
+        const engine = new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE});
         expect(engine.handleCommand('ATZ')).toBe('ATZ\r\rELM327 v1.5');
         expect(engine.handleCommand('ATE0')).toBe('ATE0\rOK');
         expect(engine.handleCommand('ATL0')).toBe('OK');
@@ -111,6 +112,18 @@ describe('DTC lifecycle', () => {
         expect(engine.handleCommand('0A')).toBe('4A010420');
     });
 
+    it('refuses mode 04 while the engine runs on vehicles that demand engine-off', () => {
+        const engine = engineAt(60_000, {profile: {...SYNTHETIC_GASOLINE_PROFILE, clearRequiresEngineOff: true}});
+        engine.injectDtc('P0301');
+        // 7F 04 22 — conditions not correct; nothing is cleared.
+        expect(engine.handleCommand('04')).toBe('7F0422');
+        expect(engine.storedDtcs).toEqual(['P0301']);
+        expect(engine.handleCommand('0202')).not.toBe('4202000000');
+        engine.setIgnition('key-on');
+        expect(engine.handleCommand('04')).toBe('44');
+        expect(engine.storedDtcs).toEqual([]);
+    });
+
     it('mode 04 clears stored and pending but keeps permanent codes', () => {
         const engine = engineAt(0);
         engine.injectDtc('P0301');
@@ -141,8 +154,10 @@ describe('DTC validation', () => {
     });
 
     it('fails fast on malformed codes in the profile', () => {
-        expect(() => new SimulatorEngine({profile: {...GASOLINE_PROFILE, storedDtcs: ['X0000']}})).toThrow(/invalid DTC "X0000"/);
-        expect(() => new SimulatorEngine({profile: {...GASOLINE_PROFILE, permanentDtcs: ['u0100']}})).not.toThrow();
+        expect(() => new SimulatorEngine({profile: {...SYNTHETIC_GASOLINE_PROFILE, storedDtcs: ['X0000']}})).toThrow(
+            /invalid DTC "X0000"/,
+        );
+        expect(() => new SimulatorEngine({profile: {...SYNTHETIC_GASOLINE_PROFILE, permanentDtcs: ['u0100']}})).not.toThrow();
     });
 });
 
@@ -237,7 +252,7 @@ describe('mode 09 vehicle info', () => {
             .match(/.{2}/g)
             ?.map((pair) => String.fromCharCode(Number.parseInt(pair, 16)))
             .join('');
-        expect(vin).toBe(GASOLINE_PROFILE.vin);
+        expect(vin).toBe(SYNTHETIC_GASOLINE_PROFILE.vin);
     });
 
     it('answers the ignition-matching performance infotype only', () => {

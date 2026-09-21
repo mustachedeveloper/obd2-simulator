@@ -2,7 +2,16 @@ import {readFileSync} from 'node:fs';
 import {describe, expect, expectTypeOf, it} from 'vitest';
 import * as core from '../src/index';
 import * as node from '../src/node/index';
-import type {AdapterPersona, EngineSnapshot, VehicleProfile} from '../src/index';
+import type {
+    AdapterPersona,
+    DriveCycle,
+    EngineSnapshot,
+    SimulatorDefinition,
+    SimulatorId,
+    SimulatorProvenance,
+    VehicleProfile,
+    VehicleTraits,
+} from '../src/index';
 
 // The 1.0 contract: every exported runtime name. Adding is fine (extend the
 // list); removing or renaming one is a breaking change and must bump the
@@ -16,6 +25,9 @@ describe('public API surface', () => {
             'ADAPTIVE_TIMING_FACTORS',
             'CLONE_V21_ADAPTER',
             'DEFAULT_ADAPTER',
+            'DEFAULT_DIESEL_SIMULATOR',
+            'DEFAULT_GASOLINE_SIMULATOR',
+            'DEFAULT_SIMULATOR_ID',
             'DIESEL_PROFILE',
             'DefaultDrivingModel',
             'ELM_DEFAULT_TIMEOUT_HEX',
@@ -26,13 +38,18 @@ describe('public API surface', () => {
             'PID_ENCODERS',
             'REFERENCE_PROFILE',
             'REFERENCE_SECOND_ECU_PIDS',
+            'SIMULATORS',
             'STN_ADAPTER',
             'SimulatorEngine',
             'VLINKER_ADAPTER',
+            'createSimulator',
             'dieselDrivingModel',
             'encodeDtc',
+            'gasolineDrivingModel',
+            'getSimulator',
             'hybridDrivingModel',
             'latencyFromWireLog',
+            'listSimulators',
             'normalizeDtc',
             'personaFromWireLog',
         ]);
@@ -106,6 +123,7 @@ describe('public API surface', () => {
             | 'protocol'
             | 'additionalEcus'
             | 'supportsPermanentDtcs'
+            | 'clearRequiresEngineOff'
         >();
         expectTypeOf<keyof AdapterPersona>().toEqualTypeOf<
             | 'name'
@@ -128,5 +146,23 @@ describe('public API surface', () => {
         expectTypeOf<keyof EngineSnapshot>().toEqualTypeOf<
             'link' | 'storedDtcs' | 'pendingDtcs' | 'permanentDtcs' | 'freezeFrame' | 'overrides' | 'ignition' | 'pendingFaults'
         >();
+        expectTypeOf<keyof SimulatorDefinition>().toEqualTypeOf<
+            'id' | 'label' | 'description' | 'kind' | 'profile' | 'createModel' | 'provenance'
+        >();
+        expectTypeOf<keyof SimulatorProvenance>().toEqualTypeOf<'sessions' | 'from' | 'to' | 'importerVersion'>();
+        expectTypeOf<keyof DriveCycle>().toEqualTypeOf<
+            'stepSeconds' | 'speedKmh' | 'rpm' | 'throttlePct' | 'engineLoadPct' | 'fuelRateLph'
+        >();
+        expectTypeOf<keyof VehicleTraits>().toEqualTypeOf<
+            | 'idleRpm'
+            | 'coolantStartC'
+            | 'coolantTargetC'
+            | 'coolantWarmupTauS'
+            | 'chargingVoltage'
+            | 'longTermFuelTrimPct'
+            | 'intakeTempC'
+        >();
+        // Ids only ever get added.
+        expectTypeOf<'default-gasoline' | 'default-diesel'>().toMatchTypeOf<SimulatorId>();
     });
 });

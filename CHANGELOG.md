@@ -16,8 +16,49 @@ renaming any of them bumps the major version. Wire output may still change
 in minor versions when a recording proves real hardware behaves differently
 — that is the point of the library — and such changes are listed here.
 
+### Changed
+
+- **The default gasoline vehicle is now recorded from a real car.**
+  `GASOLINE_PROFILE` — and therefore `new SimulatorEngine()` — is a 2025
+  spark-ignition car on CAN 29/500 (`ATDPN` → `A7`, `18DAF1xx` headers) with
+  an engine ECU, a transmission ECU and a module that rejects DTC requests:
+  functional requests print one line per ECU (`0100` → two lines, `03` →
+  `4300` / `7F0310` / `4300`), mode `0A` answers `NO DATA`, the PID set is
+  the 47 PIDs the car serves (was 70 synthetic ones), readiness bytes, 28
+  in-use counters, mode 06 results, calibration ids, CVNs and ECU names are
+  the car's. Only the VIN serial is synthetic. `new SimulatorEngine()` also
+  drives `gasolineDrivingModel()` — a recorded 15-minute drive replayed in a
+  loop instead of the synthetic 96 s cycle (+~20 KB minified in the core
+  bundle); a `profile` passed without a `model` keeps the synthetic cycle. Use a response
+  hint (`010C 1`) or `ATCRA` for single-line answers. The idealized
+  single-ECU car is gone from the public API.
+- `REFERENCE_PROFILE` was that same car, transcribed by hand; it is now an
+  alias of `GASOLINE_PROFILE` (name `'reference'`). Two corrections come
+  with it: the in-use performance record has 28 counters (`0908` → length
+  line `03B`; the 12-counter `01B` was a clone adapter truncating the
+  response) and the transmission calibration id reads `0CW906556EC+0562`.
+- `HYBRID_PROFILE` is unchanged on the wire (it keeps its idealized base).
+
 ### Added
 
+- Selectable simulators: a `SimulatorDefinition` bundles a vehicle profile
+  with its driving model. `createSimulator(id?, options?)`,
+  `getSimulator(id)`, `listSimulators()`, `SIMULATORS`,
+  `DEFAULT_SIMULATOR_ID`, `DEFAULT_GASOLINE_SIMULATOR`,
+  `DEFAULT_DIESEL_SIMULATOR`; ids `default-gasoline` (the default) and
+  `default-diesel`. CLI: `--simulator <id>`, `--list-simulators`;
+  `--profile` keeps working.
+- `DefaultDrivingModel` options `traits` (`VehicleTraits`: idle speed,
+  operating temperature, warm-up time, charging voltage, fuel trim, intake
+  temperature) and `cycle` (`DriveCycle`: a recorded drive replayed in a
+  loop). Without them the model's output is unchanged, byte for byte.
+  `gasolineDrivingModel()` is the default vehicle's model.
+- `VehicleProfile.clearRequiresEngineOff`: mode 04 answers `7F 04 22` while
+  the engine runs and clears with the key on, engine off. Off by default.
+- `npm run import-vehicle` (repository only): generates a recorded
+  vehicle's profile, traits and drive cycle from wire logs, with the VIN
+  serial replaced and a guard against leaking recorded identifiers — see
+  `docs/ADDING-A-VEHICLE.md`.
 - `HYBRID_PROFILE` + `hybridDrivingModel()` (CLI `--profile hybrid`): a
   gasoline hybrid with PID `0x5B` (battery pack remaining life), fuel type
   `0x11`, and the combustion engine off at standstill.

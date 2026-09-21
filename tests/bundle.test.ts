@@ -1,4 +1,4 @@
-import {existsSync, readFileSync} from 'node:fs';
+import {existsSync, readFileSync, readdirSync, statSync} from 'node:fs';
 import {dirname, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createContext, runInContext} from 'node:vm';
@@ -43,7 +43,22 @@ function loadInSandbox(entry: string): Record<string, unknown> {
     return load(entry);
 }
 
+// Everything a React Native / browser app downloads for `obd2-simulator`:
+// the entry plus the chunks it shares with the node entry. The default
+// vehicle's recorded drive (~20 KB minified) is part of it on purpose — a
+// bare `new SimulatorEngine()` replays it. The budget keeps that, and every
+// vehicle added later, from growing unnoticed.
+const CORE_BUDGET_BYTES = 160 * 1024;
+
 describe.skipIf(!existsSync(BUNDLE))('built core bundle', () => {
+    it('stays within its size budget', () => {
+        const dist = dirname(BUNDLE);
+        const bytes = readdirSync(dist)
+            .filter((file) => file.endsWith('.js'))
+            .reduce((sum, file) => sum + statSync(resolve(dist, file)).size, 0);
+        expect(bytes).toBeLessThan(CORE_BUDGET_BYTES);
+    });
+
     it('loads and simulates a vehicle with no Node globals at all', () => {
         const api = loadInSandbox(BUNDLE) as {
             SimulatorEngine: new (options: object) => {handleCommand(c: string): string};
@@ -51,7 +66,8 @@ describe.skipIf(!existsSync(BUNDLE))('built core bundle', () => {
         };
         const engine = new api.SimulatorEngine({now: () => 0});
         expect(engine.handleCommand('ATE0')).toBe('ATE0\rOK');
-        expect(engine.handleCommand('010C')).toMatch(/^410C[0-9A-F]{4}$/);
+        // The default vehicle has two ECUs that report engine speed.
+        expect(engine.handleCommand('010C')).toMatch(/^410C[0-9A-F]{4}\r410C[0-9A-F]{4}$/);
         expect(typeof api.MemoryLink).toBe('function');
     });
 });

@@ -1,38 +1,21 @@
-import type {VehicleProfile} from '../core/types';
+import {DefaultDrivingModel} from '../core/DefaultDrivingModel';
+import type {DrivingModel, VehicleProfile} from '../core/types';
+import {CYCLE, TRAITS} from '../vehicles/gasoline/driving';
+import {PROFILE} from '../vehicles/gasoline/profile';
 
 /**
- * A typical spark-ignition passenger car: VW-coded VIN (model year 2011),
- * catalyst/EVAP/O2/O2-heater/EGR monitors with EVAP still incomplete.
+ * The default vehicle, recorded from a real car: a 2025 spark-ignition
+ * passenger car on ISO 15765-4 CAN 29/500 with an engine ECU, a
+ * transmission ECU and a third module that rejects DTC requests
+ * (7F xx 10). PID set, readiness, in-use counters, mode 06 results and the
+ * ECU identities are what the car answered; only the VIN serial is
+ * synthetic. Generated — see src/vehicles/gasoline.
  */
-export const GASOLINE_PROFILE: VehicleProfile = {
-    name: 'gasoline',
-    vin: 'WVWZZZ1KZBW123456',
-    calibrationId: 'OBD2SIM-CAL-0001',
-    cvn: 'A1B2C3D4',
-    ecuName: 'ECM-EngineControl',
-    ignition: 'spark',
-    /**
-     * The broad spark-ignition set: everything a well-equipped gasoline car
-     * reports. Deliberately absent: the duplicate lambda encoding (0x34+),
-     * multi-bank/multi-sensor copies (O2 S3-S8, catalyst bank 2), hybrid
-     * (0x5B) and the diesel-only pack (DPF/NOx/DEF/EGT/turbo).
-     */
-    pids: [
-        0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x1c,
-        0x1e, 0x1f, 0x21, 0x22, 0x23, 0x24, 0x25, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x3c, 0x3e, 0x42, 0x43, 0x44,
-        0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x59, 0x5a, 0x5c, 0x5e,
-        0x61, 0x62, 0x63, 0x64, 0x66, 0x67, 0x68, 0x8e, 0xa4, 0xa6,
-    ],
-    readinessSinceClear: [0x07, 0xe5, 0x04],
-    readinessThisDriveCycle: [0x17, 0xe5, 0x24],
-    /**
-     * OBDCOND, IGNCNTR, CATCOMP1, CATCOND1.
-     */
-    performanceCounters: [120, 300, 40, 110],
-    monitorTests: [
-        // Catalyst bank 1: ratio ×0.001 (UAS 0x02), 0.200 within [0, 0.400].
-        {mid: 0x21, tid: 0x86, uasId: 0x02, value: 200, min: 0, max: 400},
-        // Misfire cylinder 1: count (UAS 0x01), 10 against a max of 5 → fail.
-        {mid: 0xa2, tid: 0x0b, uasId: 0x01, value: 10, min: 0, max: 5},
-    ],
-};
+export const GASOLINE_PROFILE: VehicleProfile = PROFILE;
+
+/**
+ * Driving model matching the profile: a recorded 15-minute drive (town and
+ * country road) replayed in a loop, with the car's measured idle speed,
+ * operating temperature, charging voltage and fuel trim.
+ */
+export const gasolineDrivingModel = (): DrivingModel => new DefaultDrivingModel({traits: TRAITS, cycle: CYCLE});

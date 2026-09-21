@@ -1,13 +1,7 @@
 import {describe, expect, it} from 'vitest';
-import {
-    CLONE_V21_ADAPTER,
-    DEFAULT_ADAPTER,
-    GASOLINE_PROFILE,
-    REFERENCE_PROFILE,
-    SimulatorEngine,
-    VLINKER_ADAPTER,
-} from '../src/index';
+import {CLONE_V21_ADAPTER, DEFAULT_ADAPTER, REFERENCE_PROFILE, SimulatorEngine, VLINKER_ADAPTER} from '../src/index';
 import type {AdapterPersona, VehicleProfile} from '../src/index';
+import {SYNTHETIC_GASOLINE_PROFILE} from './helpers/synthetic';
 
 // Wire-level fidelity against real ELM327 hardware (see tests/fixtures/wirelog
 // for the recordings these rules were read from).
@@ -16,7 +10,7 @@ import type {AdapterPersona, VehicleProfile} from '../src/index';
 // mode; tests that are not about the search pin the protocol first.
 const engineWith = (
     adapter: AdapterPersona = DEFAULT_ADAPTER,
-    profile: VehicleProfile = GASOLINE_PROFILE,
+    profile: VehicleProfile = SYNTHETIC_GASOLINE_PROFILE,
     init: string[] = ['ATE0', 'ATSP6'],
 ) => {
     const engine = new SimulatorEngine({now: () => 0, seed: 7, adapter, profile});
@@ -41,7 +35,7 @@ describe('prompt and line framing', () => {
     });
 
     it('echoes the command exactly as typed while echo is on', () => {
-        const engine = new SimulatorEngine({now: () => 0});
+        const engine = new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE});
         expect(engine.execute('010c 1').response).toMatch(/^010c 1\r410C[0-9A-F]{4}$/);
         expect(engine.execute('ATE0').wire).toBe('ATE0\rOK\r\r>');
         expect(engine.execute('010c 1').response).toMatch(/^410C/);
@@ -78,14 +72,14 @@ describe('spaces (ATS)', () => {
     });
 
     it('spaces the header bytes too under ATH1', () => {
-        const vlinker = engineWith(VLINKER_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATSP6', 'ATH1']);
+        const vlinker = engineWith(VLINKER_ADAPTER, SYNTHETIC_GASOLINE_PROFILE, ['ATE0', 'ATSP6', 'ATH1']);
         expect(vlinker.handleCommand('010C 1')).toMatch(/^7E8 04 41 0C [0-9A-F]{2} [0-9A-F]{2} 00 00 00$/);
     });
 });
 
 describe('protocol search', () => {
     it('prints SEARCHING... and charges the search time on the first request in auto mode', () => {
-        const vlinker = engineWith(VLINKER_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP0']);
+        const vlinker = engineWith(VLINKER_ADAPTER, SYNTHETIC_GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP0']);
         const first = vlinker.execute('0100');
         expect(lines(first.response)[0]).toBe('SEARCHING...');
         expect(lines(first.response)[1]).toMatch(/^4100/);
@@ -97,7 +91,7 @@ describe('protocol search', () => {
     });
 
     it('does not search with a fixed protocol, and searches again after ATSP0 / ATZ', () => {
-        const vlinker = engineWith(VLINKER_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATSP6']);
+        const vlinker = engineWith(VLINKER_ADAPTER, SYNTHETIC_GASOLINE_PROFILE, ['ATE0', 'ATSP6']);
         expect(vlinker.execute('0100').latency.searchMs).toBe(0);
         vlinker.handleCommand('ATSP0');
         expect(vlinker.execute('0100').latency.searchMs).toBeGreaterThan(0);
@@ -107,7 +101,7 @@ describe('protocol search', () => {
     });
 
     it('reports UNABLE TO CONNECT when nothing answers the probe, and keeps searching', () => {
-        const vlinker = engineWith(VLINKER_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP0']);
+        const vlinker = engineWith(VLINKER_ADAPTER, SYNTHETIC_GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP0']);
         expect(vlinker.handleCommand('01FF')).toBe('SEARCHING...\rUNABLE TO CONNECT');
         expect(vlinker.handleCommand('01FF')).toBe('SEARCHING...\rUNABLE TO CONNECT');
         expect(vlinker.handleCommand('010C 1')).toMatch(/^SEARCHING\.\.\.\r410C/);
@@ -121,7 +115,7 @@ describe('protocol search', () => {
         const reference = engineWith(VLINKER_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP0']);
         expect(reference.handleCommand('ATDPN')).toBe('A7');
         expect(reference.handleCommand('ATDP')).toBe('AUTO, ISO 15765-4 (CAN 29/500)');
-        expect(engineWith(DEFAULT_ADAPTER, GASOLINE_PROFILE, ['ATE0']).handleCommand('ATDPN')).toBe('A6');
+        expect(engineWith(DEFAULT_ADAPTER, SYNTHETIC_GASOLINE_PROFILE, ['ATE0']).handleCommand('ATDPN')).toBe('A6');
     });
 });
 
@@ -185,7 +179,8 @@ describe('multi-ECU vehicles (profile-defined)', () => {
         expect(lines(reference.handleCommand('0904')).filter((line) => line === '013')).toHaveLength(2);
         expect(lines(reference.handleCommand('0906'))).toHaveLength(2);
         expect(lines(reference.handleCommand('090A')).filter((line) => line === '017')).toHaveLength(2);
-        expect(lines(reference.handleCommand('0908'))[0]).toBe('01B');
+        // 28 in-use counters: 3 + 56 bytes.
+        expect(lines(reference.handleCommand('0908'))[0]).toBe('03B');
     });
 
     it('advertises the vehicle-info set on 0900', () => {

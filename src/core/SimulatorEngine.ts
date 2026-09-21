@@ -16,7 +16,7 @@ import type {
 import {DefaultDrivingModel} from './DefaultDrivingModel';
 import {mulberry32} from './prng';
 import {PID_ENCODERS, encodeDtc, maskBytesFor, normalizeDtc, toHex} from './j1979';
-import {GASOLINE_PROFILE} from '../profiles/gasoline';
+import {GASOLINE_PROFILE, gasolineDrivingModel} from '../profiles/gasoline';
 import {DEFAULT_ADAPTER} from '../adapters/presets';
 import {AUTO_PROTOCOL, bannerLines, handleAtCommand, handleStCommand, resetLinkState} from './at-commands';
 import {formatLines, hexToBytes, type EcuResponse} from './framing';
@@ -39,7 +39,14 @@ import {waitMsFor, type CommandKind} from './timing';
 // which ECUs answer; the adapter persona decides identity, quirks and timing.
 
 export interface SimulatorEngineOptions {
+    /**
+     * Default: the default gasoline vehicle.
+     */
     profile?: VehicleProfile;
+    /**
+     * Default: the default vehicle's recorded drive when no `profile` is
+     * given either, otherwise the synthetic cycle (`DefaultDrivingModel`).
+     */
     model?: DrivingModel;
     adapter?: AdapterPersona;
     /**
@@ -61,6 +68,7 @@ const DEFAULT_PROTOCOL: CanProtocol = '6';
 const HEX_REQUEST = /^([0-9A-F]{2})+$/;
 const NEGATIVE_RESPONSE = 0x7f;
 const NRC_GENERAL_REJECT = 0x10;
+const NRC_CONDITIONS_NOT_CORRECT = 0x22;
 const NRC_SERVICE_NOT_SUPPORTED = 0x11;
 const MIL_BIT = 0x80;
 const MAX_DTC_COUNT = 0x7f;
@@ -139,7 +147,11 @@ export class SimulatorEngine {
 
     constructor(options: SimulatorEngineOptions = {}) {
         this.profile = options.profile ?? GASOLINE_PROFILE;
-        this.model = options.model ?? new DefaultDrivingModel();
+        // No profile → the default simulator, vehicle and recorded drive
+        // together. A profile without a model always gets the synthetic
+        // cycle, whatever the profile is: pairing a vehicle with its own
+        // model is what createSimulator() is for.
+        this.model = options.model ?? (options.profile ? new DefaultDrivingModel() : gasolineDrivingModel());
         this.now = options.now ?? Date.now;
         this.random = mulberry32(options.seed ?? 42);
         this.startedAt = this.now();
@@ -640,6 +652,11 @@ export class SimulatorEngine {
     // Mode 04 clears stored + pending codes and the freeze frame; permanent
     // codes survive (only the vehicle erases them after a verified repair).
     private respondDtcClear(): EcuResponse[] {
+        if (this.profile.clearRequiresEngineOff && this.ignitionState === 'running') {
+            return this.ecus
+                .filter((ecu) => ecu.dtcReply !== 'none')
+                .map((ecu) => ({ecu: ecu.id, payload: [NEGATIVE_RESPONSE, 0x04, NRC_CONDITIONS_NOT_CORRECT]}));
+        }
         this.stored = [];
         this.pending = [];
         this.freezeFrame = null;

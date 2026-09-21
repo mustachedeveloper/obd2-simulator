@@ -1,14 +1,19 @@
 # Roadmap
 
-State as of 2026-08-26: the 1.0.0 work is committed on the stacked branches
+State as of 2026-09-21: the 1.0.0 work is committed on the stacked branches
 `release/0.3.1` → `release/0.4.0` → `release/0.5.0` → `release/1.0.0`
-(`277e476`). Nothing is pushed; npm still serves 0.2.0.
+(`277e476`); the selectable simulators, the recorded default gasoline
+vehicle and `npm run import-vehicle` sit on top of `release/1.0.0` and are
+part of 1.0.0. Nothing is pushed; npm still serves 0.2.0.
 
-Verified before release: 212 tests, 95.5 % statement coverage, clean
-typecheck/lint, `arethetypeswrong` + `publint` clean, the packed tarball
-installs and resolves types under `nodenext` / `node10` / `bundler`, the CJS
-and ESM entries run on real Node 18, and a CLI + control-channel end-to-end
-run behaves as documented.
+Verified on 2026-09-21: 293 tests, 96.3 % statement coverage, clean
+typecheck/lint, the core bundle runs without Node globals and stays inside
+its 160 KB budget (132 KB), a CLI end-to-end run (`--simulator`,
+`--list-simulators`, a live TCP session) behaves as documented. Verified on
+2026-08-26 and **not re-run since the default vehicle changed**:
+`arethetypeswrong` + `publint`, the packed tarball under `nodenext` /
+`node10` / `bundler`, the CJS and ESM entries on real Node 18, and the
+control-channel end-to-end run.
 
 ## 1. Release (owner: maintainer — these cannot be automated from here)
 
@@ -19,7 +24,7 @@ run behaves as documented.
 | 1.3 | Repository Settings → Pages → source **GitHub Actions** | One-time; `docs.yml` then publishes the typedoc API reference on every release tag |
 | 1.4 | Confirm the `NPM_TOKEN` secret still works | Unused since 0.2.0 (2026-08-13). Alternative: npm trusted publishing (OIDC), which removes the token — needs the repo/workflow registered once on npmjs.com, then `NODE_AUTH_TOKEN` can go |
 | 1.5 | Watch the first CI run | It has never executed: the matrix, the Node 18 smoke job, the tag ↔ version check and the publish job are all unproven on GitHub's runners |
-| 1.6 | Bump AutoPulse to 1.0 and run its simulator round-trip suite | Visible differences: `ATZ` output now starts with `\r`, the prompt is `\r\r>`, PID `0x44` is 2 bytes and `0x55`/`0x56` are 1 byte. Its parsers tolerate all of these, but hard-coded expectations in its tests may need updating |
+| 1.6 | Bump AutoPulse to 1.0 and run its simulator round-trip suite | Visible differences: `ATZ` output now starts with `\r`, the prompt is `\r\r>`, PID `0x44` is 2 bytes and `0x55`/`0x56` are 1 byte. **The default gasoline vehicle is now the recorded 3-ECU CAN 29-bit car**: unhinted requests print one line per ECU, the PID set shrank to the 47 real PIDs, mode `0A` is `NO DATA`, and the drive is a recorded 15-minute loop — `SimulatorTransport` can switch to `createSimulator(id)`. Its parsers handle all of this on the real car already, but hard-coded expectations in its tests may need updating |
 
 ## 2. Feature backlog (1.x, ordered by value)
 
@@ -34,7 +39,31 @@ Services `22` / `19` / `10` currently answer `7F xx 11`. AutoPulse's
 - Per-ECU, like modes 03/09 already are.
 - Estimate: ~1 day including golden coverage for the negative paths.
 
-### 2.2 Wire-log recording with `ATH1` (29-bit headers)
+### 2.2 More recorded vehicles
+
+The registry (`src/simulators`) and `npm run import-vehicle` exist so that
+every new set of recordings becomes a selectable simulator with a ~15-line
+definition (`docs/ADDING-A-VEHICLE.md`). Known gaps the recordings exposed:
+
+- **Real 29-bit source addresses.** The car's ECUs answer as `18DAF101` /
+  `18DAF102`; the simulator maps `7E8`/`7E9` to `18DAF110` / `18DAF118`.
+  Needs an optional `EcuProfile.sourceAddress` (and one for the engine ECU).
+- **Encoders for PIDs `34 65 6D 70 71 8B 9D 9E`** — advertised by the
+  recorded car, left out of its profile because `PID_ENCODERS` lacks them.
+- **Clone truncation as a persona trait.** The v2.1 clone cuts multi-frame
+  responses off after five frames (`0908` → `01B` instead of `03B`, mode 06
+  records lose their tail); today that is a documented deviation in
+  `tests/wirelog-golden.test.ts`.
+- **Mode 04 with several ECUs.** `clearRequiresEngineOff` refuses for every
+  ECU; the recordings also show mixed answers (`44` from one module,
+  `7F0478` from another) that are not modelled.
+- **Warm-up time** (`coolantWarmupTauS`) and the cold-start temperature are
+  not derived yet — the importer leaves them at their defaults.
+- A second, single-ECU CAN 11-bit vehicle is in the data store (2026-08-23
+  sessions) and would be the first test of the pipeline on another car; it
+  needs recordings with VIN, mode 09 and a full drive first.
+
+### 2.2b Wire-log recording with `ATH1` (29-bit headers)
 
 `18DAF1xx` header framing is only asserted synthetically
 (`tests/fidelity.test.ts`); neither fixture recording ever enables headers,
