@@ -68,7 +68,9 @@
         "format": "biome check --write .",
         "check": "npm run lint && npm run typecheck && npm run test:coverage",
         "prepublishOnly": "npm run check && npm run build",
-        "docs": "typedoc"
+        "docs": "typedoc",
+        "import-vehicle": "npm run import-vehicle:build && node node_modules/.cache/import-vehicle.mjs",
+        "import-vehicle:build": "esbuild tools/import-vehicle/cli.ts --bundle --platform=node --format=esm --log-level=warning --outfile=node_modules/.cache/import-vehicle.mjs"
     },
     "keywords": [
         "obd2",
