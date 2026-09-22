@@ -35,6 +35,11 @@ export interface IdentityReport {
      * `clearRequiresEngineOff`, which is left to the maintainer to enable.
      */
     refusesClearWhileRunning: boolean;
+    /**
+     * Modules that answered mode 04 and nothing else, beyond the ids the
+     * importer hands out — dropped from the profile.
+     */
+    clearOnlyModulesDropped: number;
 }
 
 export interface IdentityResult {
@@ -349,6 +354,7 @@ export function buildIdentity(exchanges: readonly Exchange[], options: IdentityO
             unsupportedPids: advertised.filter((pid) => PID_ENCODERS[pid] === undefined),
             missing: required.filter((request) => !asked.has(request)),
             refusesClearWhileRunning: answers.sawPayload('04', '7F0422'),
+            clearOnlyModulesDropped: Math.max(0, clearOnly - CLEAR_ONLY_ECU_IDS.length),
         },
         secrets: [recordedVin],
     };

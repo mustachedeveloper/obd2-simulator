@@ -691,16 +691,16 @@ export class SimulatorEngine {
     // Mode 04 clears stored + pending codes and the freeze frame; permanent
     // codes survive (only the vehicle erases them after a verified repair).
     private respondDtcClear(): EcuResponse[] {
-        const answering = this.ecus.filter((ecu) => ecu.clearReply !== 'none');
+        const answering = this.ecus.filter(
+            (ecu): ecu is Ecu & {clearReply: keyof typeof CLEAR_PAYLOADS} => ecu.clearReply !== 'none',
+        );
         if (this.profile.clearRequiresEngineOff && this.ignitionState === 'running') {
             return answering.map((ecu) => ({ecu: ecu.id, payload: [NEGATIVE_RESPONSE, 0x04, NRC_CONDITIONS_NOT_CORRECT]}));
         }
         this.stored = [];
         this.pending = [];
         this.freezeFrame = null;
-        return answering.flatMap((ecu) =>
-            ecu.clearReply === 'none' ? [] : [{ecu: ecu.id, payload: [...CLEAR_PAYLOADS[ecu.clearReply]]}],
-        );
+        return answering.map((ecu) => ({ecu: ecu.id, payload: [...CLEAR_PAYLOADS[ecu.clearReply]]}));
     }
 
     private captureFreezeFrame(): void {

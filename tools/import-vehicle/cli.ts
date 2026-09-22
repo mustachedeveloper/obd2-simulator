@@ -164,6 +164,11 @@ function run(options: Options): void {
     if (identity.report.refusesClearWhileRunning) {
         console.log('note: the vehicle refuses mode 04 while running (7F0422) — consider clearRequiresEngineOff');
     }
+    if (identity.report.clearOnlyModulesDropped > 0) {
+        console.warn(
+            `warning: ${identity.report.clearOnlyModulesDropped} module(s) answering mode 04 only were dropped — CLEAR_ONLY_ECU_IDS is full`,
+        );
+    }
     console.log(`traits: ${JSON.stringify(traits)}`);
     const fittedPids = Object.keys(signals).map(Number);
     const sloped = fittedPids.filter((pid) => {

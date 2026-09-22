@@ -4,7 +4,9 @@ import * as core from '../src/index';
 import * as node from '../src/node/index';
 import type {
     AdapterPersona,
+    CommandResult,
     DriveCycle,
+    EcuProfile,
     EngineSnapshot,
     SignalFit,
     SimulatorDefinition,
@@ -159,6 +161,10 @@ describe('public API surface', () => {
             | 'resetLatencyMs'
             | 'voltageOffsetV'
         >();
+        expectTypeOf<keyof EcuProfile>().toEqualTypeOf<
+            'id' | 'sourceAddress' | 'name' | 'pids' | 'readiness' | 'calibrationId' | 'cvn' | 'dtcReply' | 'clearReply'
+        >();
+        expectTypeOf<keyof CommandResult>().toEqualTypeOf<'command' | 'response' | 'wire' | 'latency' | 'silent'>();
         expectTypeOf<keyof EngineSnapshot>().toEqualTypeOf<
             'link' | 'storedDtcs' | 'pendingDtcs' | 'permanentDtcs' | 'freezeFrame' | 'overrides' | 'ignition' | 'pendingFaults'
         >();

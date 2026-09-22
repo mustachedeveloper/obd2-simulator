@@ -227,8 +227,9 @@ export class MemoryLink {
             return;
         }
         const wire = this.corrupt(result.wire);
-        // 'SEARCHING...' goes out before the search, the rest after it.
-        const cut = searchMs > 0 && wire.startsWith(SEARCHING) ? wire.indexOf(SEARCHING) + SEARCHING.length + 1 : 0;
+        // 'SEARCHING...' and its line ending go out before the search, the rest after it.
+        const eol = this.engine.linkState.linefeeds ? '\r\n' : '\r';
+        const cut = searchMs > 0 && wire.startsWith(SEARCHING + eol) ? SEARCHING.length + eol.length : 0;
         const timers = [
             ...(cut > 0 ? [this.emitLater(wire.slice(0, cut), headMs, () => this.markEmitted(SEARCHING))] : []),
             this.emitLater(wire.slice(cut), latencyMs, () => {

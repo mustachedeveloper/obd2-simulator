@@ -42,6 +42,20 @@ describe('MemoryLink — interruptible', () => {
         expect(chunks.join('')).toBe('SEARCHING...\rSTOPPED\r\r>');
     });
 
+    it('keeps the whole line ending in front of the search when linefeeds are on', async () => {
+        const {engine, link, chunks} = await linked({interruptible: true});
+        engine.setIgnition('off');
+        await link.write('ATL1');
+        await vi.advanceTimersByTimeAsync(100);
+        chunks.length = 0;
+        await link.write('010D 1');
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(chunks.join('')).toBe('SEARCHING...\r\n');
+        await link.write('0105 1');
+        await vi.advanceTimersByTimeAsync(700);
+        expect(chunks.join('')).toBe('SEARCHING...\r\nSTOPPED\r\n\r\n>');
+    });
+
     it('does not lock the protocol in when a successful search is aborted', async () => {
         const {link, chunks} = await linked({interruptible: true});
         await link.write('0100');
