@@ -1,5 +1,13 @@
 import {describe, expect, it} from 'vitest';
-import {CLONE_V21_ADAPTER, DEFAULT_ADAPTER, REFERENCE_PROFILE, SimulatorEngine, VLINKER_ADAPTER} from '../src/index';
+import {
+    CLONE_OBDII_ADAPTER,
+    CLONE_V21_ADAPTER,
+    DEFAULT_ADAPTER,
+    GENUINE_ELM_ADAPTER,
+    REFERENCE_PROFILE,
+    SimulatorEngine,
+    VLINKER_ADAPTER,
+} from '../src/index';
 import type {AdapterPersona, VehicleProfile} from '../src/index';
 import {SYNTHETIC_GASOLINE_PROFILE} from './helpers/synthetic';
 
@@ -73,7 +81,10 @@ describe('spaces (ATS)', () => {
 
     it('spaces the header bytes too under ATH1', () => {
         const vlinker = engineWith(VLINKER_ADAPTER, SYNTHETIC_GASOLINE_PROFILE, ['ATE0', 'ATSP6', 'ATH1']);
-        expect(vlinker.handleCommand('010C 1')).toMatch(/^7E8 04 41 0C [0-9A-F]{2} [0-9A-F]{2} 00 00 00$/);
+        // The vLinker prints a single frame as far as its PCI length.
+        expect(vlinker.handleCommand('010C 1')).toMatch(/^7E8 04 41 0C [0-9A-F]{2} [0-9A-F]{2}$/);
+        const genuine = engineWith(GENUINE_ELM_ADAPTER, SYNTHETIC_GASOLINE_PROFILE, ['ATE0', 'ATSP6', 'ATH1']);
+        expect(genuine.handleCommand('010C 1')).toMatch(/^7E8 04 41 0C [0-9A-F]{2} [0-9A-F]{2} 00 00 00$/);
     });
 });
 
@@ -123,20 +134,52 @@ describe('29-bit CAN addressing', () => {
     it('prints 29-bit response headers for ISO 15765-4 CAN 29 vehicles', () => {
         const reference = engineWith(VLINKER_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP7', 'ATH1']);
         const rpm = lines(reference.handleCommand('010C'));
-        expect(rpm[0]).toMatch(/^18DAF11004410C[0-9A-F]{4}AAAAAA$/);
-        expect(rpm[1]).toMatch(/^18DAF11804410C[0-9A-F]{4}AAAAAA$/);
+        // Recorded: '18DAF10104410C0E7E' — the car's own source addresses, and
+        // the vLinker prints a single frame only as far as its PCI length.
+        expect(rpm[0]).toMatch(/^18DAF10104410C[0-9A-F]{4}$/);
+        expect(rpm[1]).toMatch(/^18DAF10204410C[0-9A-F]{4}$/);
         reference.handleCommand('ATS1');
-        expect(lines(reference.handleCommand('010C'))[0]).toMatch(/^18 DA F1 10 04 41 0C /);
+        expect(lines(reference.handleCommand('010C'))[0]).toMatch(/^18 DA F1 01 04 41 0C [0-9A-F]{2} [0-9A-F]{2}$/);
+        // Multi-frame output keeps whole frames.
+        reference.handleCommand('ATS0');
+        expect(lines(reference.handleCommand('017A'))).toEqual([
+            expect.stringMatching(/^18DAF1011009417A[0-9A-F]{8}$/),
+            expect.stringMatching(/^18DAF10121[0-9A-F]{6}AAAAAAAA$/),
+        ]);
+        // The clone that pads everything lists both ECUs with the padding (recorded).
+        const clone = engineWith(CLONE_OBDII_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP7', 'ATH1']);
+        expect(lines(clone.handleCommand('010C 1'))).toEqual([
+            expect.stringMatching(/^18DAF10104410C[0-9A-F]{4}AAAAAA$/),
+            expect.stringMatching(/^18DAF10204410C[0-9A-F]{4}AAAAAA$/),
+        ]);
+    });
+
+    it('keeps the 0x10 + 8·n mapping for ECUs without a declared source address', () => {
+        const profile = {...SYNTHETIC_GASOLINE_PROFILE, protocol: '7' as const, additionalEcus: [{id: '7E9', pids: [0x0c]}]};
+        const engine = engineWith(DEFAULT_ADAPTER, profile, ['ATE0', 'ATH1']);
+        expect(lines(engine.handleCommand('010C')).map((line) => line.slice(0, 8))).toEqual(['18DAF110', '18DAF118']);
+        engine.handleCommand('ATSH18DA18F1');
+        expect(lines(engine.handleCommand('010C'))).toEqual([expect.stringMatching(/^18DAF118/)]);
+    });
+
+    it('rejects source addresses that are not a byte or collide', () => {
+        const base = {...SYNTHETIC_GASOLINE_PROFILE, protocol: '7' as const};
+        expect(() => new SimulatorEngine({profile: {...base, sourceAddress: 0x100}})).toThrow(/sourceAddress/);
+        expect(
+            () => new SimulatorEngine({profile: {...base, sourceAddress: 0x18, additionalEcus: [{id: '7E9', pids: []}]}}),
+        ).toThrow(/sourceAddress/);
     });
 
     it('addresses ECUs physically with 29-bit request headers', () => {
         const reference = engineWith(VLINKER_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP7', 'ATH1']);
-        reference.handleCommand('ATSH18DA18F1');
-        expect(lines(reference.handleCommand('010C'))).toEqual([expect.stringMatching(/^18DAF118/)]);
+        reference.handleCommand('ATSH18DA02F1');
+        expect(lines(reference.handleCommand('010C'))).toEqual([expect.stringMatching(/^18DAF102/)]);
+        reference.handleCommand('ATSH18DA18F1'); // nobody lives there on this car
+        expect(reference.handleCommand('010C')).toBe('NO DATA');
         reference.handleCommand('ATSH18DB33F1');
         expect(lines(reference.handleCommand('010C'))).toHaveLength(2);
-        reference.handleCommand('ATCRA18DAF118');
-        expect(lines(reference.handleCommand('010C'))).toEqual([expect.stringMatching(/^18DAF118/)]);
+        reference.handleCommand('ATCRA18DAF102');
+        expect(lines(reference.handleCommand('010C'))).toEqual([expect.stringMatching(/^18DAF102/)]);
     });
 
     it('follows a forced 11-bit protocol even on a 29-bit vehicle (headers only)', () => {
@@ -214,7 +257,7 @@ describe('negative responses and unknown requests', () => {
     it('rejects from every addressed ECU, so a physically addressed module rejects too', () => {
         const reference = engineWith(CLONE_V21_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP7']);
         expect(lines(reference.handleCommand('22F190'))).toEqual(['7F2211', '7F2211', '7F2211']);
-        reference.handleCommand('ATSH18DA18F1');
+        reference.handleCommand('ATSH18DA02F1');
         expect(reference.handleCommand('22F190')).toBe('7F2211');
     });
 

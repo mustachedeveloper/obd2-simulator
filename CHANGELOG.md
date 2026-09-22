@@ -55,6 +55,36 @@ in minor versions when a recording proves real hardware behaves differently
   - The default car warms up like the car: from 46 °C with τ = 160 s (median
     of its 22 recorded cold starts; was 22 °C / 150 s), oil settling 4 °C
     above coolant (`VehicleTraits.oilOverCoolantC`, default 8).
+  - The vLinker preset's response hint counts CAN frames
+    (`AdapterPersona.hintCountsFrames`), as the adapter does in all 179
+    recorded cases: `017A 1` prints the length line and the first frame only
+    (`009` / `0:417A05000A00`). Without a hint, or with a hint that covers
+    the frames, nothing changes; the other presets keep counting responses.
+  - PID `A4` on the default car carries the engaged gear alone, as recorded
+    (`41A401000000` at standstill, `41A401200000` in second):
+    `VehicleProfile.transmissionPid: 'gear'`. It used to answer `NO DATA` at
+    standstill and a ratio when moving; profiles that do not declare the
+    field keep the ratio layout.
+  - **29-bit source addresses are the car's own**: `18DAF101` (engine) and
+    `18DAF102` (transmission) instead of the `0x10 + 8·n` rule
+    (`VehicleProfile.sourceAddress`, `EcuProfile.sourceAddress`, read by the
+    importer from a headers-on exchange); `ATSH18DA02F1` addresses the
+    transmission ECU, `ATSH18DA18F1` nobody. Profiles without the field keep
+    the rule. The vLinker presets print a raw single frame only as far as
+    its PCI length (`18DAF10104410C0E7E`, `trimsRawSingleFrames`).
+  - Mode 04 on the default car answers from four modules — `44`, `7F0478`,
+    `44`, `7F0478` (`EcuProfile.clearReply`; a module with no other role is
+    `{pids: [], dtcReply: 'none', clearReply: 'pending'}`).
+  - The default car's secondary signals are fitted from the raw exchanges
+    (16 fits, was 9): exhaust gas temperature, catalyst temperature and
+    ambient temperature follow the drive; exhaust pressure, module voltage,
+    throttle B, pedal D are constants at their recorded level. The
+    importer decodes the engine ECU's mode 01 answers itself and fits
+    against rpm and speed alone when load was hardly ever logged next to a
+    channel.
+  - `ATRV` with the key off reads 12.4 V (was 12.2).
+  - `ATCS` and `ATIGN` per persona (`canStatus`; both clones answer
+    `ATIGN` → `ON`), `ATDPN` was already `A7`.
 - `REFERENCE_PROFILE` was that same car, transcribed by hand; it is now an
   alias of `GASOLINE_PROFILE` (name `'reference'`). Two corrections come
   with it: the in-use performance record has 28 counters (`0908` → length
@@ -64,6 +94,24 @@ in minor versions when a recording proves real hardware behaves differently
 
 ### Added
 
+- `engine.setIgnition('off', {afterRunMs})` — the engine ECU's after-run
+  phase, seen at the end of 59 recorded drives: for 10–15 s it rejects every
+  request with `7F xx 22` while the other ECUs are already silent, then `NO
+  DATA` (and `UNABLE TO CONNECT` for a searching adapter). Control channel:
+  `ignition off 12`. Without the option `'off'` is instant, as before.
+- `AdapterPersona` fields measured from the recordings: `hintCountsFrames`,
+  `protocolSearchFailMs` (a search nobody answers takes longer),
+  `atLatencyMs`, `resetLatencyMs`, `voltageOffsetV`, `canStatus`,
+  `padsSingleFrames`, `trimsRawSingleFrames`, `batch.overflow: 'silent'`
+  (a request beyond `maxPids` prints nothing — `CommandResult.silent`, the
+  links stay quiet and the app runs into its timeout). Presets
+  `VLINKER_FD_ADAPTER` (`vlinker-fd`) and `CLONE_OBDII_ADAPTER`
+  (`clone-obdii`); the existing presets carry the measured values.
+- `MemoryLink({interruptible: true})` and `engine.interrupt()`: a write
+  while a command is in progress aborts it with `STOPPED`, as recorded when
+  the app gives up on `SEARCHING...`; an aborted search is not locked in.
+- Golden fixtures `vlinker-fd-probe` and `clone-obdii-probe`: the adapter
+  probe with `ATH1`, the first recordings with 29-bit headers on.
 - Selectable simulators: a `SimulatorDefinition` bundles a vehicle profile
   with its driving model. `createSimulator(id?, options?)`,
   `getSimulator(id)`, `listSimulators()`, `SIMULATORS`,

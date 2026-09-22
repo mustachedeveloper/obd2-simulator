@@ -1,5 +1,5 @@
 import {toHex} from './j1979';
-import {headerText} from './ecus';
+import {headerText, type SourceAddresses} from './ecus';
 
 // ECU responses → the text an ELM327 prints. With headers off, single-frame
 // payloads are one hex line and longer ones use the ISO-TP long form
@@ -44,9 +44,12 @@ const hex = (bytes: readonly number[], spaces: boolean): string => bytes.map(toH
 
 /**
  * @param padding fills the last segment to a whole consecutive frame; undefined → printed as long as the payload.
+ * @param padSingle a single frame is printed whole as well, padding included (needs `padding`).
  */
-export function isoTpLines(payload: readonly number[], spaces = false, padding?: number): string[] {
-    if (payload.length <= SINGLE_FRAME_MAX) return [hex(payload, spaces)];
+export function isoTpLines(payload: readonly number[], spaces = false, padding?: number, padSingle = false): string[] {
+    if (payload.length <= SINGLE_FRAME_MAX) {
+        return [hex(padSingle && padding !== undefined ? filled(payload, SINGLE_FRAME_MAX, padding) : payload, spaces)];
+    }
     const lines = [payload.length.toString(16).toUpperCase().padStart(3, '0')];
     let offset = 0;
     for (let segment = 0; offset < payload.length; segment++) {
@@ -70,18 +73,54 @@ export interface FramingOptions {
     padding?: number;
     // true → the adapter cuts the last segment to the payload (headers off only).
     trimSegments?: boolean;
+    // The adapter stops listening after this many CAN frames (a frame-counting
+    // response hint): later frames and ECUs are never printed.
+    maxFrames?: number;
+    // true → single frames are printed whole, padding included (headers off only).
+    padSingleFrames?: boolean;
+    // true → a raw single frame ends at its PCI length (headers on only).
+    trimRawSingleFrames?: boolean;
+    // Declared 29-bit source addresses by ECU id.
+    sources?: SourceAddresses;
 }
 
 function ecuLines(response: EcuResponse, options: FramingOptions): string[] {
-    if (!options.headers) return isoTpLines(response.payload, options.spaces, options.trimSegments ? undefined : options.padding);
-    const header = headerText(response.ecu, options.extended, options.spaces);
-    return canFrames(response.payload, options.padding).map(
-        (frame) => `${header}${options.spaces ? ' ' : ''}${hex(frame, options.spaces)}`,
-    );
+    if (!options.headers) {
+        const padding = options.trimSegments ? undefined : options.padding;
+        return isoTpLines(response.payload, options.spaces, padding, options.padSingleFrames === true);
+    }
+    const header = headerText(response.ecu, options.extended, options.spaces, options.sources);
+    const single = response.payload.length <= SINGLE_FRAME_MAX;
+    const frames =
+        single && options.trimRawSingleFrames
+            ? [[response.payload.length, ...response.payload]]
+            : canFrames(response.payload, options.padding);
+    return frames.map((frame) => `${header}${options.spaces ? ' ' : ''}${hex(frame, options.spaces)}`);
+}
+
+// With headers off a multi-frame answer prints one line more than it has
+// frames (the length line), which does not count against the budget.
+function withinBudget(lines: readonly string[], frames: number, headers: boolean): string[] {
+    const extra = !headers && lines.length > 1 ? 1 : 0;
+    return lines.slice(0, frames + extra);
+}
+
+function budgeted(perEcu: readonly string[][], responses: readonly EcuResponse[], options: FramingOptions): string[][] {
+    if (options.maxFrames === undefined) return [...perEcu];
+    let left = options.maxFrames;
+    return perEcu.flatMap((lines, index) => {
+        const frames = Math.min(left, canFrames(responses[index]?.payload ?? []).length);
+        left -= frames;
+        return frames > 0 ? [withinBudget(lines, frames, options.headers)] : [];
+    });
 }
 
 export function formatLines(responses: readonly EcuResponse[], options: FramingOptions): string[] {
-    const perEcu = responses.map((response) => ecuLines(response, options));
+    const perEcu = budgeted(
+        responses.map((response) => ecuLines(response, options)),
+        responses,
+        options,
+    );
     if (!options.interleave || perEcu.length < 2) return perEcu.flat();
     const depth = Math.max(...perEcu.map((lines) => lines.length));
     const interleaved: string[] = [];

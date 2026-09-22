@@ -3,6 +3,7 @@ import {join, resolve} from 'node:path';
 import {assertNoLeak} from './anonymize';
 import {buildCycle, toSeries} from './cycle';
 import {renderDrivingModule, renderProfileModule} from './emit';
+import {withDecodedSamples} from './decode';
 import {buildIdentity} from './identity';
 import {ecuPayloads, requestOf} from './responses';
 import {type Session, readSession} from './session';
@@ -127,7 +128,7 @@ function run(options: Options): void {
               )),
     };
     const {signals, diagnosis} = fitSignals(
-        sessions.map((session) => session.samples),
+        sessions.map((session) => withDecodedSamples(session.samples, session.exchanges)),
         identity.profile.pids,
     );
     const cycle = buildCycle(

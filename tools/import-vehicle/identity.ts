@@ -61,6 +61,9 @@ const CAN_PROTOCOLS: readonly string[] = ['6', '7', '8', '9'];
 const COMPRESSION_IGNITION_BIT = 0x08;
 const SECOND_ECU_ID = '7E9';
 const REJECTING_ECU_ID = '7EA';
+// Ids for modules that answer mode 04 and nothing else.
+const CLEAR_ONLY_ECU_IDS = ['7EB', '7EC', '7ED'] as const;
+const CLEAR_PENDING = '7F0478';
 
 const hex2 = (value: number): string => value.toString(16).toUpperCase().padStart(2, '0');
 const bytesOf = (payload: string): number[] => payload.match(/.{2}/g)?.map((pair) => Number.parseInt(pair, 16)) ?? [];
@@ -133,6 +136,25 @@ class Answers {
     sawPayload(request: string, payload: string): boolean {
         return (this.byRequest.get(request) ?? []).some((answer) =>
             answer.payloads.some((printed) => printed.startsWith(payload) && /^(AA)*$/.test(printed.slice(payload.length))),
+        );
+    }
+
+    /**
+     * Most ECUs that ever answered the request at once.
+     */
+    mostResponders(request: string): number {
+        return Math.max(0, ...(this.byRequest.get(request) ?? []).map((answer) => answer.payloads.length));
+    }
+
+    /**
+     * Most responders that gave `payload` (padded or not) in one answer.
+     */
+    mostOf(request: string, payload: string): number {
+        return Math.max(
+            0,
+            ...(this.byRequest.get(request) ?? []).map(
+                (answer) => answer.payloads.filter((printed) => printed.startsWith(payload)).length,
+            ),
         );
     }
 
@@ -221,6 +243,44 @@ function protocolOf(exchanges: readonly Exchange[]): CanProtocol | null {
 /**
  * @throws if the recordings lack the essentials (support masks, VIN).
  */
+const HEADERS_ON = 'ATH1';
+const HEADERS_OFF: ReadonlySet<string> = new Set(['ATH0', 'ATZ', 'ATWS', 'ATD']);
+const HEADER_29 = /^18DAF1([0-9A-F]{2})/;
+
+/**
+ * 29-bit source addresses by responder (engine ECU first), read from the
+ * exchanges recorded between ATH1 and ATH0: '18DAF101…' → 0x01. Empty when
+ * headers were never on or the bus is 11-bit.
+ */
+export function sourceAddresses(exchanges: readonly Exchange[]): number[] {
+    let headers = false;
+    const seen: string[][] = [];
+    for (const exchange of exchanges) {
+        const command = requestOf(exchange.c);
+        if (command === HEADERS_ON) headers = true;
+        else if (HEADERS_OFF.has(command)) headers = false;
+        else if (headers) {
+            const sources = exchange.r
+                .replace(/ /g, '')
+                .split(/\r\n?|\n/)
+                .map((line) => HEADER_29.exec(line.trim().toUpperCase())?.[1])
+                .filter((source): source is string => source !== undefined);
+            // Consecutive frames repeat their ECU's header.
+            [...new Set(sources)].forEach((source, responder) => {
+                seen[responder] = [...(seen[responder] ?? []), source];
+            });
+        }
+    }
+    return seen.map((candidates) => Number.parseInt(mostCommon(candidates) ?? '', 16)).filter(Number.isFinite);
+}
+
+// PID A4's support byte (data byte A): 01 → the engaged gear alone, no ratio.
+const GEAR_ONLY_SUPPORT = '41A401';
+
+function reportsGearOnly(answers: Answers): boolean {
+    return answers.majority('01A4', 0, '41A4', 1) === GEAR_ONLY_SUPPORT;
+}
+
 export function buildIdentity(exchanges: readonly Exchange[], options: IdentityOptions): IdentityResult {
     const answers = new Answers(exchanges);
     const asked = new Set(exchanges.map((exchange) => requestOf(exchange.c)));
@@ -235,11 +295,28 @@ export function buildIdentity(exchanges: readonly Exchange[], options: IdentityO
     const thisCycle = readiness(answers, 0x41, 0);
     const compression = ((sinceClear?.[0] ?? 0) & COMPRESSION_IGNITION_BIT) !== 0;
     const counterInfotype = compression ? '0B' : '08';
-    const second = secondEcu(answers, pids);
+    const [engineSource, secondSource] = sourceAddresses(exchanges);
+    const recordedSecond = secondEcu(answers, pids);
+    const second =
+        recordedSecond && secondSource !== undefined ? {...recordedSecond, sourceAddress: secondSource} : recordedSecond;
     const rejectsDtcRequests = answers.sawPayload('03', '7F0310');
+    // Mode 04 with the engine stopped: some modules clear (44), others only
+    // ever say 'response pending' (7F0478). The ones that answer nothing
+    // else become modules of their own; which module said what cannot be
+    // told without headers, so the rejecting module is taken to be one.
+    const pendingClears = answers.mostOf('04', CLEAR_PENDING);
+    const known = 1 + (rejectsDtcRequests ? 1 : 0) + (second ? 1 : 0);
+    const clearOnly = Math.max(0, answers.mostResponders('04') - known);
+    const rejecting = {id: REJECTING_ECU_ID, pids: [], dtcReply: 'reject' as const};
     const additionalEcus: EcuProfile[] = [
-        ...(rejectsDtcRequests ? [{id: REJECTING_ECU_ID, pids: [], dtcReply: 'reject' as const}] : []),
+        ...(rejectsDtcRequests ? [pendingClears > 0 ? {...rejecting, clearReply: 'pending' as const} : rejecting] : []),
         ...(second ? [second] : []),
+        ...CLEAR_ONLY_ECU_IDS.slice(0, clearOnly).map((id, index) => ({
+            id,
+            pids: [],
+            dtcReply: 'none' as const,
+            clearReply: index < pendingClears - (rejectsDtcRequests ? 1 : 0) ? ('pending' as const) : ('positive' as const),
+        })),
     ];
     const protocol = protocolOf(exchanges);
     const paddingHex = mostCommon(
@@ -265,6 +342,8 @@ export function buildIdentity(exchanges: readonly Exchange[], options: IdentityO
             // Asked and never answered → the vehicle has no mode 0A.
             supportsPermanentDtcs: !asked.has('0A') || answers.has('0A'),
             ...(paddingHex ? {framePadding: Number.parseInt(paddingHex, 16)} : {}),
+            ...(reportsGearOnly(answers) ? {transmissionPid: 'gear' as const} : {}),
+            ...(engineSource === undefined ? {} : {sourceAddress: engineSource}),
         },
         report: {
             unsupportedPids: advertised.filter((pid) => PID_ENCODERS[pid] === undefined),

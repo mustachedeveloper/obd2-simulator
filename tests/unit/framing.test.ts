@@ -96,6 +96,33 @@ describe('formatLines', () => {
     });
 });
 
+describe('formatLines with a frame budget', () => {
+    const options = {headers: false, spaces: false, extended: false, interleave: false};
+    const two = [
+        {ecu: '7E8', payload: bytes(8)},
+        {ecu: '7E9', payload: bytes(2)},
+    ];
+
+    it('keeps the length line and only the frames that fit', () => {
+        expect(formatLines(two, {...options, maxFrames: 1})).toEqual(['008', '0:010203040506']);
+        expect(formatLines(two, {...options, maxFrames: 2})).toEqual(['008', '0:010203040506', '1:0708']);
+        expect(formatLines(two, {...options, maxFrames: 3})).toEqual(['008', '0:010203040506', '1:0708', '0102']);
+        expect(formatLines(two, {...options, maxFrames: 9})).toEqual(formatLines(two, options));
+    });
+
+    it('counts raw frames with headers on', () => {
+        expect(formatLines(two, {...options, headers: true, maxFrames: 1})).toEqual(['7E81008010203040506']);
+    });
+
+    it('pads a kept last segment only', () => {
+        expect(formatLines(two, {...options, padding: 0xaa, maxFrames: 2})).toEqual([
+            '008',
+            '0:010203040506',
+            '1:0708AAAAAAAAAA',
+        ]);
+    });
+});
+
 describe('ECU addressing', () => {
     it('maps 11-bit response ids to 29-bit source addresses in steps of 8', () => {
         expect(ecuHeader('7E8', false)).toBe('7E8');

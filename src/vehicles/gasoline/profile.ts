@@ -56,18 +56,28 @@ export const PROFILE: VehicleProfile = {
             id: '7EA',
             pids: [],
             dtcReply: 'reject',
+            clearReply: 'pending',
         },
         {
             id: '7E9',
+            sourceAddress: 0x02,
             name: 'TCM-TransmisCtrl',
             pids: [0x04, 0x05, 0x0c, 0x0d, 0x0f, 0x33, 0x42, 0x46, 0x49],
             readiness: [0x04, 0x00, 0x00],
             calibrationId: '0CW906556EC+0562',
             cvn: 'A9C9EF55',
         },
+        {
+            id: '7EB',
+            pids: [],
+            dtcReply: 'none',
+            clearReply: 'pending',
+        },
     ],
     supportsPermanentDtcs: false,
     framePadding: 0xaa,
+    transmissionPid: 'gear',
+    sourceAddress: 0x01,
 };
 
 export const PROVENANCE: SimulatorProvenance = {

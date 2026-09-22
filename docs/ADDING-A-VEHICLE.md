@@ -9,8 +9,8 @@ Wire logs in the AutoPulse logger format — gzip NDJSON, one record per line:
 | `k` | Record | Used for |
 |-----|--------|----------|
 | `h` | session header (adapter, device, install id) | provenance dates; its ids are treated as secrets |
-| `x` | adapter exchange `{c: command, r: raw response}` | identity: PID masks, readiness, modes 06/09, DTC services, protocol |
-| `s` | decoded sample `{p: channel, v: value}` | drive cycle, traits and signal fits |
+| `x` | adapter exchange `{c: command, r: raw response}` | identity: PID masks, readiness, modes 06/09, DTC services, protocol, 29-bit source addresses (`ATH1`), mode 04 modules, PID A4 layout; signal fits and their driving state (mode 01 answers of the engine ECU, decoded by `tools/import-vehicle/decode.ts`) |
+| `s` | decoded sample `{p: channel, v: value}` | drive cycle, traits; signal fits for channels the exchanges never answered |
 
 The more sessions the better: static answers are decided by majority (clones truncate and interleave long responses), drifting values (in-use counters, monitor results) come from the latest complete response. For a useful profile the logs should contain, at least once and preferably from a genuine adapter: `0100…01A0` **without** a response hint (so every ECU answers), `0101`, `0141`, `0902`, `0904`, `0906`, `0908`/`090B`, `090A`, the mode 06 MIDs, `03`, `07`, `0A`, `ATDPN`. The importer lists what was never sent.
 
@@ -49,7 +49,7 @@ PID 0E  n=   318  R²=0.05  → none        lively but unexplained: the generic 
 PID 78  n=    22  R²=   —  → none        too few samples to say anything
 ```
 
-A sample only counts when load, rpm and speed were read within the 2 s before it, so **a channel polled once at connect contributes almost nothing**. The best recording for a new vehicle is a drive with every supported PID polled continuously (~1 Hz each) next to rpm, speed and load — a "full sweep". Channels are mapped to PIDs in `tools/import-vehicle/signals.ts` (`CHANNELS`); lambda and counters are left out on purpose. The noise of a fit is capped at 2 % of the measured range: the residual of a fit is slow, systematic error, and replaying it as per-reading jitter would make values jump.
+A sample only counts when rpm and speed were read within the 2 s before it (load too, when it was — a channel that was hardly ever polled next to load is fitted against rpm and speed alone), so **a channel polled once at connect contributes almost nothing**. Fitted channels and the driving state are decoded from the raw exchanges, not from the app's samples: an app logs only what it displays, the ECU answered every poll. The best recording for a new vehicle is a drive with every supported PID polled continuously (~1 Hz each) next to rpm, speed and load — a "full sweep". Channels are mapped to PIDs in `tools/import-vehicle/signals.ts` (`CHANNELS`); lambda and counters are left out on purpose. The noise of a fit is capped at 2 % of the measured range: the residual of a fit is slow, systematic error, and replaying it as per-reading jitter would make values jump.
 
 ## Privacy
 

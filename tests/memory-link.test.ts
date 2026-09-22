@@ -107,12 +107,18 @@ describe('MemoryLink timing and history', () => {
         await vi.advanceTimersByTimeAsync(1);
         await connecting;
         const pending = collectUntilPrompt(link);
-        await link.write('ATZ');
+        await link.write('ATI');
         await vi.advanceTimersByTimeAsync(100);
         await pending;
         expect(link.history[0]?.latencyMs).toBeGreaterThanOrEqual(
             VLINKER_ADAPTER.baseLatencyMs - VLINKER_ADAPTER.latencyJitterMs,
         );
+        // A reset takes as long as the hardware's: about 1.2 s on the vLinker.
+        const reset = collectUntilPrompt(link);
+        await link.write('ATZ');
+        await vi.advanceTimersByTimeAsync(1300);
+        await reset;
+        expect(link.history[1]?.latencyMs).toBeGreaterThan(1000);
         link.clearHistory();
         expect(link.history).toHaveLength(0);
         await link.disconnect();

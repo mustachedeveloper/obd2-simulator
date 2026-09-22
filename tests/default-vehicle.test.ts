@@ -108,7 +108,7 @@ describe('default gasoline vehicle — identity', () => {
     it('keeps manufacturer, model and year in the VIN and nothing of the real serial', () => {
         expect(GASOLINE_PROFILE.vin).toMatch(/^[A-HJ-NPR-Z0-9]{11}123456$/);
         expect(GASOLINE_PROFILE.protocol).toBe('7');
-        expect(GASOLINE_PROFILE.additionalEcus?.map((ecu) => ecu.id)).toEqual(['7EA', '7E9']);
+        expect(GASOLINE_PROFILE.additionalEcus?.map((ecu) => ecu.id)).toEqual(['7EA', '7E9', '7EB']);
     });
 
     it('is a recorded simulator with provenance and no identifying data', () => {

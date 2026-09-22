@@ -24,6 +24,7 @@ describe('public API surface', () => {
             'ADAPTER_FAULTS',
             'ADAPTER_PRESETS',
             'ADAPTIVE_TIMING_FACTORS',
+            'CLONE_OBDII_ADAPTER',
             'CLONE_V21_ADAPTER',
             'DEFAULT_ADAPTER',
             'DEFAULT_DIESEL_SIMULATOR',
@@ -43,6 +44,7 @@ describe('public API surface', () => {
             'STN_ADAPTER',
             'SimulatorEngine',
             'VLINKER_ADAPTER',
+            'VLINKER_FD_ADAPTER',
             'createSimulator',
             'dieselDrivingModel',
             'encodeDtc',
@@ -87,6 +89,7 @@ describe('public API surface', () => {
             'handleCommand',
             'ignition',
             'injectDtc',
+            'interrupt',
             'linkState',
             'onCommand',
             'override',
@@ -126,6 +129,8 @@ describe('public API surface', () => {
             | 'supportsPermanentDtcs'
             | 'framePadding'
             | 'clearRequiresEngineOff'
+            | 'transmissionPid'
+            | 'sourceAddress'
         >();
         expectTypeOf<keyof AdapterPersona>().toEqualTypeOf<
             | 'name'
@@ -134,6 +139,7 @@ describe('public API surface', () => {
             | 'identifier'
             | 'stn'
             | 'honorsResponseHint'
+            | 'hintCountsFrames'
             | 'batch'
             | 'adaptiveTiming'
             | 'ignitionMonitor'
@@ -145,6 +151,13 @@ describe('public API surface', () => {
             | 'bannerPrefix'
             | 'bannerBlankLine'
             | 'trimsFramePadding'
+            | 'trimsRawSingleFrames'
+            | 'padsSingleFrames'
+            | 'canStatus'
+            | 'protocolSearchFailMs'
+            | 'atLatencyMs'
+            | 'resetLatencyMs'
+            | 'voltageOffsetV'
         >();
         expectTypeOf<keyof EngineSnapshot>().toEqualTypeOf<
             'link' | 'storedDtcs' | 'pendingDtcs' | 'permanentDtcs' | 'freezeFrame' | 'overrides' | 'ignition' | 'pendingFaults'

@@ -18,14 +18,21 @@ export const TRAITS: Partial<VehicleTraits> = {
 
 // How each PID followed load, rpm and speed in the recordings (least squares; constants where unrelated).
 export const SIGNALS: SignalFits = {
-    0x06: {base: -0.7813, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: -3.125, max: 3.125, noise: 0.125},
-    0x07: {base: -7.031, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: -9.375, max: -3.906, noise: 0.1094},
-    0x0b: {base: 3.645, perLoadPct: 0.8083, perKrpm: 4.724, perKmh: 0.6952, min: 22, max: 184, noise: 3.24},
-    0x33: {base: 100, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 90, max: 101, noise: 0},
-    0x43: {base: -8.921, perLoadPct: 0.6839, perKrpm: 10.4, perKmh: 0.3448, min: 0, max: 129, noise: 2.58},
+    0x06: {base: 0, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: -6.25, max: 6.25, noise: 0.25},
+    0x07: {base: -5.469, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: -10.16, max: -3.906, noise: 0.125},
+    0x0b: {base: 3.992, perLoadPct: 0.8057, perKrpm: 4.456, perKmh: 0.7003, min: 22, max: 184, noise: 3.24},
+    0x33: {base: 100, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 89, max: 101, noise: 0},
+    0x3c: {base: 477.5, perLoadPct: 0, perKrpm: 38.23, perKmh: 0.8739, min: 424.1, max: 798.4, noise: 7.486},
+    0x42: {base: 13.94, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 12.82, max: 14.6, noise: 0.0356},
+    0x43: {base: -8.663, perLoadPct: 0.6703, perKrpm: 10.67, perKmh: 0.3292, min: 0, max: 126.7, noise: 2.533},
     0x45: {base: -8.472, perLoadPct: 0.2431, perKrpm: 2.757, perKmh: 0.3875, min: 0, max: 74.12, noise: 1.482},
-    0x4c: {base: 3.529, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 2.353, max: 15.69, noise: 0.2667},
+    0x46: {base: 35.21, perLoadPct: 0, perKrpm: -0.5154, perKmh: -0.06282, min: 24, max: 45, noise: 0.42},
+    0x47: {base: 12.94, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 12.55, max: 25.1, noise: 0.251},
+    0x4a: {base: 14.12, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 14.12, max: 26.67, noise: 0},
+    0x4c: {base: 3.137, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 2.353, max: 15.29, noise: 0.2588},
     0x63: {base: 250, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 250, max: 250, noise: 0},
+    0x73: {base: 100.4, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 93.7, max: 105.6, noise: 0.2384},
+    0x78: {base: 422.4, perLoadPct: 0, perKrpm: 26.62, perKmh: 1.016, min: 343.8, max: 690.5, noise: 6.934},
     0x8e: {base: 5, perLoadPct: 0, perKrpm: 0, perKmh: 0, min: 3, max: 6, noise: 0},
 };
 

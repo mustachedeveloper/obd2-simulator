@@ -1,4 +1,4 @@
-import type {LinkStatus} from '../core/types';
+import type {CommandResult, LinkStatus} from '../core/types';
 import type {SimulatorEngine} from '../core/SimulatorEngine';
 import {checkQueueCount} from '../core/snapshot';
 
@@ -25,6 +25,16 @@ export interface MemoryLinkOptions {
      * the whole delay, as in 0.2.0. Default true.
      */
     includeWaitWindow?: boolean;
+    /**
+     * true → behaves like the hardware when the app does not wait for the
+     * prompt: a write while a command is still in progress aborts it, the
+     * adapter prints STOPPED and the new command is NOT executed. Searches
+     * then take their real time, with 'SEARCHING...' printed up front — so
+     * an app that gives up after 3 s sees exactly what it sees in a car
+     * with the ignition off. Default false: writes queue and every command
+     * is answered in order, without the search time.
+     */
+    interruptible?: boolean;
     /**
      * Responses longer than this are emitted in two chunks.
      */
@@ -53,6 +63,16 @@ export interface CommandLogEntry {
     at: number;
 }
 
+// A command whose response is still on its way (interruptible links only).
+interface Flight {
+    result: CommandResult;
+    entry: CommandLogEntry;
+    timers: readonly ReturnType<typeof setTimeout>[];
+    // What already reached the app ('SEARCHING...'), without line ending.
+    emitted: string;
+}
+
+const SEARCHING = 'SEARCHING...';
 const DEFAULT_CONNECT_DELAY_MS = 150;
 const DEFAULT_CHUNK_SPLIT_THRESHOLD = 6;
 const DEFAULT_HISTORY_LIMIT = 500;
@@ -63,6 +83,7 @@ export class MemoryLink {
     private readonly responseDelayMs: number | null;
     private readonly jitterMs: number | null;
     private readonly includeWaitWindow: boolean;
+    private readonly interruptible: boolean;
     private readonly chunkSplitThreshold: number;
     private readonly historyLimit: number;
     private readonly dataListeners = new Set<(chunk: string) => void>();
@@ -80,6 +101,7 @@ export class MemoryLink {
     // delay notice they belong to a dead session and never emit.
     private session = 0;
     private corruptions: LinkCorruption[] = [];
+    private flight: Flight | null = null;
 
     constructor(engine: SimulatorEngine, options: MemoryLinkOptions = {}) {
         this.engine = engine;
@@ -87,6 +109,7 @@ export class MemoryLink {
         this.responseDelayMs = options.responseDelayMs ?? null;
         this.jitterMs = options.jitterMs ?? null;
         this.includeWaitWindow = options.includeWaitWindow ?? true;
+        this.interruptible = options.interruptible ?? false;
         this.chunkSplitThreshold = options.chunkSplitThreshold ?? DEFAULT_CHUNK_SPLIT_THRESHOLD;
         this.historyLimit = options.historyLimit ?? DEFAULT_HISTORY_LIMIT;
     }
@@ -146,6 +169,7 @@ export class MemoryLink {
         for (const reject of this.pendingDelayRejects) reject(new Error('simulator disconnected'));
         this.pendingDelayRejects.clear();
         this.session += 1;
+        this.flight = null;
         this.tail = Promise.resolve();
         this.setStatus('disconnected');
     }
@@ -154,6 +178,7 @@ export class MemoryLink {
         if (this.status !== 'connected') {
             throw new Error('simulator not connected');
         }
+        if (this.interruptible) return this.writeInterruptible(data);
         const result = this.engine.execute(data);
         const latencyMs = Math.max(
             0,
@@ -162,6 +187,9 @@ export class MemoryLink {
                 (this.includeWaitWindow ? result.latency.waitMs : 0),
         );
         this.record({command: result.command, response: result.response, latencyMs, at: Date.now()});
+        // A command the adapter drops produces no bytes at all; a queued
+        // corruption waits for the next real response.
+        if (result.silent) return;
         const response = this.corrupt(result.wire);
         const session = this.session;
         this.tail = this.tail.then(
@@ -176,6 +204,52 @@ export class MemoryLink {
             () => undefined,
         );
         this.tail.catch(() => undefined);
+    }
+
+    // The hardware's way: bytes arriving while a command runs abort it.
+    private writeInterruptible(data: string): void {
+        const aborted = this.flight;
+        if (aborted) {
+            for (const timer of aborted.timers) {
+                clearTimeout(timer);
+                this.pendingTimers.delete(timer);
+            }
+            this.log = this.log.map((entry) => (entry === aborted.entry ? {...entry, response: aborted.emitted} : entry));
+        }
+        const result = aborted ? this.engine.interrupt(aborted.result, data) : this.engine.execute(data);
+        const {baseMs, jitterMs, waitMs, searchMs} = result.latency;
+        const headMs = Math.max(0, (this.responseDelayMs ?? baseMs) + (this.jitterMs ?? jitterMs));
+        const latencyMs = headMs + (this.includeWaitWindow ? waitMs : 0) + searchMs;
+        const entry = {command: result.command, response: result.response, latencyMs, at: Date.now()};
+        this.record(entry);
+        if (result.silent) {
+            this.flight = null;
+            return;
+        }
+        const wire = this.corrupt(result.wire);
+        // 'SEARCHING...' goes out before the search, the rest after it.
+        const cut = searchMs > 0 && wire.startsWith(SEARCHING) ? wire.indexOf(SEARCHING) + SEARCHING.length + 1 : 0;
+        const timers = [
+            ...(cut > 0 ? [this.emitLater(wire.slice(0, cut), headMs, () => this.markEmitted(SEARCHING))] : []),
+            this.emitLater(wire.slice(cut), latencyMs, () => {
+                this.flight = null;
+            }),
+        ];
+        this.flight = {result, entry, timers, emitted: ''};
+    }
+
+    private markEmitted(text: string): void {
+        if (this.flight) this.flight = {...this.flight, emitted: text};
+    }
+
+    private emitLater(text: string, delayMs: number, done: () => void): ReturnType<typeof setTimeout> {
+        const timer = setTimeout(() => {
+            this.pendingTimers.delete(timer);
+            done();
+            this.emit(text);
+        }, delayMs);
+        this.pendingTimers.add(timer);
+        return timer;
     }
 
     onData(cb: (chunk: string) => void): () => void {

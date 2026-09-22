@@ -58,6 +58,8 @@ export function resetLinkState(persona: AdapterPersona): LinkState {
     };
 }
 
+const DEFAULT_CAN_STATUS = 'T:00 R:00 F:00';
+
 const ok = (state: LinkState): AtOutcome => ({lines: ['OK'], state});
 const unknown = (state: LinkState): AtOutcome => ({lines: ['?'], state});
 const say = (text: string, state: LinkState): AtOutcome => ({lines: [text], state});
@@ -118,7 +120,7 @@ export function handleAtCommand(command: string, context: AtContext): AtOutcome 
             if (!persona.ignitionMonitor) return unknown(state);
             return say(context.ignitionOn() ? 'ON' : 'OFF', state);
         case 'ATCS':
-            return say('T:00 R:00 F:00', state);
+            return say(persona.canStatus ?? DEFAULT_CAN_STATUS, state);
         default:
             return handleParameterized(command, context);
     }

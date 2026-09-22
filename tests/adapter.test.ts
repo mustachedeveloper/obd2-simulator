@@ -100,7 +100,8 @@ describe('AT command recognition', () => {
         expect(engine.handleCommand('ATIGN')).toBe('OFF'); // ATIGN watches the ignition line, not the engine
         const stalled: DrivingModel = {value: () => null};
         expect(engineWith(undefined, {model: stalled}).handleCommand('ATIGN')).toBe('ON');
-        expect(engineWith(CLONE_V21_ADAPTER).handleCommand('ATIGN')).toBe('?');
+        expect(engineWith(CLONE_V21_ADAPTER).handleCommand('ATIGN')).toBe('ON'); // recorded on both clones
+        expect(engineWith({...CLONE_V21_ADAPTER, ignitionMonitor: false}).handleCommand('ATIGN')).toBe('?');
     });
 
     it('exposes the link state for assertions', () => {

@@ -7,12 +7,13 @@ import {normalizeDtc} from '../core/j1979';
 // command per line, one 'ok …' / 'error …' reply per line. Pure — the
 // control server only moves the strings.
 
+const MS_PER_SECOND = 1000;
 const IGNITION_STATES: readonly IgnitionState[] = ['off', 'key-on', 'running'];
 
 export const CONTROL_HELP = [
     'dtc <code> [stored|pending|permanent]',
     'set <pid-hex> <value|null>',
-    'ignition off|key-on|running',
+    'ignition off|key-on|running  (off takes after-run seconds: ignition off 12)',
     'fail <ERROR TEXT> [count]',
     'adapter <preset>',
     'clear dtcs|overrides|faults',
@@ -57,9 +58,16 @@ function apply(line: string, engines: readonly SimulatorEngine[]): string {
             return each((engine) => engine.override(pid, value), `PID ${label} = ${value === null ? 'NO DATA' : value}`);
         }
         case 'ignition': {
-            const [state] = args;
+            const [state, afterRun] = args;
             if (!state || !isIgnition(state)) fail(`ignition expects ${IGNITION_STATES.join('|')}, got "${state ?? ''}"`);
-            return each((engine) => engine.setIgnition(state), `ignition ${state}`);
+            if (afterRun === undefined) return each((engine) => engine.setIgnition(state), `ignition ${state}`);
+            if (state !== 'off') fail(`after-run seconds only apply to ignition off, got "${state}"`);
+            const seconds = Number(afterRun);
+            if (!Number.isFinite(seconds) || seconds < 0) fail(`ignition off expects after-run seconds ≥ 0, got "${afterRun}"`);
+            return each(
+                (engine) => engine.setIgnition(state, {afterRunMs: seconds * MS_PER_SECOND}),
+                `ignition off (after-run ${seconds} s)`,
+            );
         }
         case 'fail': {
             const last = args[args.length - 1] ?? '';

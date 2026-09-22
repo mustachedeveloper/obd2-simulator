@@ -178,8 +178,10 @@ The adapter in front of the vehicle is data too — `AdapterPersona` decides ide
 | Preset | Banner | Response hint | Spaces after reset | Protocol search | Latency | Notes |
 |--------|--------|---------------|--------------------|-----------------|---------|-------|
 | `DEFAULT_ADAPTER` | `ELM327 v1.5` | honored | off | never | 40 ms, no jitter | the ideal ELM for unit tests |
-| `VLINKER_ADAPTER` | `ELM327 v2.3` | honored — only the engine ECU visible with `010C 1` | on | 6 s | 32 ± 6 ms | Vgate vLinker |
-| `CLONE_V21_ADAPTER` | `OKELM327 v2.1` | **ignored** — always waits the `ATST` window, prints every ECU | on | 150 ms | 20 ± 15 ms + window, ships with `ATST FF` | cheap clone |
+| `VLINKER_ADAPTER` | `ELM327 v2.3` | honored, **counts CAN frames** — `010C 1` shows the engine ECU only, `017A 1` the first frame only | on | 6.3 s (7.1 s when nobody answers) | 32 ± 6 ms, reset 1.2 s | Vgate vLinker (IOS-Vlink) |
+| `VLINKER_FD_ADAPTER` | `ELM327 v2.2` + `STI` → `STN1151 v4.3.2` | as above | on | 4.9 s (5.7 s) | 30 ± 5 ms, reset 1 s | Vgate vLinker FD |
+| `CLONE_V21_ADAPTER` | `OKELM327 v2.1` | **ignored** — always waits the `ATST` window, prints every ECU | on | 150 ms (4.6 s) | 20 ± 15 ms + window, AT commands 68 ms, ships with `ATST FF`, reads `ATRV` 1.6 V high | cheap clone (OBDBLE) |
+| `CLONE_OBDII_ADAPTER` | `ELM327 v2.1` | ignored; **drops any request with 3+ PIDs without a word** — not even a prompt | on | 540 ms | 49 ± 8 ms + window, AT 60 ms | clone that prints whole CAN frames: `410C0E88AAAAAA` |
 | `GENUINE_ELM_ADAPTER` | `ELM327 v2.2` | honored | on | 1 s | 30 ± 4 ms | reference |
 | `STN_ADAPTER` | `ELM327 v1.4b` + `STI`/`STDI` | honored | on | 500 ms | 25 ± 3 ms | OBDLink |
 
@@ -197,7 +199,7 @@ engine.setAdapter({...CLONE_V21_ADAPTER, baseLatencyMs: 468}); // same clone, wo
 engine.linkState; // {echo, headers, spaces, linefeeds, searched, timeoutHex, adaptiveTiming, receiveFilter, requestHeader, protocol}
 ```
 
-Latency model: `totalMs = base ± jitter + wait + search`, where `wait` is the `ATST` window (`hh × 4 ms`, ELM default `32` = 200 ms) unless the persona honors the response hint and the hint was met, and `search` is charged once per protocol search. A `latencyFor(command)` engine option replaces base + jitter (e.g. with a distribution from a recorded wire log). `MemoryLink` waits the modelled latency and answers strictly in order; `responseDelayMs` / `jitterMs` override base and jitter for deterministic tests (`includeWaitWindow: false` makes `responseDelayMs` the whole delay), and `link.history` records every exchange (`command`, `response`, `latencyMs`). The TCP server applies the same model (`latencyScale: 0` to disable); the CLI takes `--adapter vlinker|clone|genuine|stn`.
+Latency model: `totalMs = base ± jitter + wait + search`, where `wait` is the `ATST` window (`hh × 4 ms`, ELM default `32` = 200 ms) unless the persona honors the response hint and the hint was met, and `search` is charged once per protocol search. A `latencyFor(command)` engine option replaces base + jitter (e.g. with a distribution from a recorded wire log). `MemoryLink` waits the modelled latency and answers strictly in order; `responseDelayMs` / `jitterMs` override base and jitter for deterministic tests (`includeWaitWindow: false` makes `responseDelayMs` the whole delay), and `link.history` records every exchange (`command`, `response`, `latencyMs`). The TCP server applies the same model (`latencyScale: 0` to disable); the CLI takes `--adapter vlinker|vlinker-fd|clone|clone-obdii|genuine|stn`. `new MemoryLink(engine, {interruptible: true})` behaves like the hardware when the app does not wait for the prompt: a write during a command aborts it and prints `STOPPED` (the new command is not run), searches take their real time with `SEARCHING...` printed first, and a dropped request produces no bytes at all.
 
 ## Steering a scenario
 
@@ -207,6 +209,7 @@ Everything mutable can be driven from the test while the app keeps polling:
 const engine = new SimulatorEngine();
 engine.override(0x05, 120);           // coolant pinned at 120 °C (null → NO DATA); freeze frames capture it
 engine.setIgnition('key-on');         // ECUs awake, engine stopped: RPM 0, 12.4 V; 'off' → every ECU asleep
+engine.setIgnition('off', {afterRunMs: 12_000}); // like a real shutdown: 12 s of 7F0122 from the engine ECU, then NO DATA
 engine.injectDtc('P0171', 'pending'); // pendingDtcs / permanentDtcs / removeDtc / clearDtcs
 engine.failNext('BUFFER FULL', 2);    // next two OBD requests print the adapter error
 engine.onCommand((result) => log(result.command, result.latency.totalMs));
@@ -227,6 +230,7 @@ nc 127.0.0.1 35001
 dtc P0301            → ok 1 engine(s): injected P0301 (stored)
 set 05 120           → ok 1 engine(s): PID 05 = 120
 ignition off         → ok 1 engine(s): ignition off
+ignition off 12      → ok 1 engine(s): ignition off (after-run 12 s)
 fail BUFFER FULL 2   → ok 1 engine(s): next 2 request(s) → BUFFER FULL
 adapter clone · clear dtcs|overrides|faults · status · help
 ```

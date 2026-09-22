@@ -37,6 +37,7 @@ export const CHANNELS: Readonly<Record<string, FittedChannel>> = {
     o2s2Voltage: {pid: 0x15, span: 1.275},
     commandedPurge: {pid: 0x2e, span: 100},
     baro: {pid: 0x33, span: 255},
+    catalystTemp: {pid: 0x3c, span: 1000},
     moduleVoltage: {pid: 0x42, span: 20},
     absoluteLoad: {pid: 0x43, span: 100},
     relThrottle: {pid: 0x45, span: 100},
@@ -105,11 +106,19 @@ export const DEFAULT_FIT_OPTIONS: FitOptions = {
 const SPAN_OF: ReadonlyMap<number, number> = new Map(Object.values(CHANNELS).map((channel) => [channel.pid, channel.span]));
 
 interface Row {
-    load: number;
+    /**
+     * null → no fresh load reading: the app logs load only while a screen
+     * shows it, most secondary PIDs are polled from screens that do not.
+     */
+    load: number | null;
     krpm: number;
     kmh: number;
     value: number;
 }
+
+type Slope = 'load' | 'krpm' | 'kmh';
+const ALL_SLOPES: readonly Slope[] = ['load', 'krpm', 'kmh'];
+const WITHOUT_LOAD: readonly Slope[] = ['krpm', 'kmh'];
 
 const STATE_CHANNELS = ['engineLoad', 'rpm', 'speed'] as const;
 // A state reading older than this no longer describes the moment.
@@ -133,11 +142,13 @@ function rowsOf(samples: readonly Sample[]): Map<number, Row[]> {
             continue;
         }
         const pid = CHANNELS[sample.p]?.pid;
-        const state = STATE_CHANNELS.map((channel) => latest.get(channel));
-        const fresh = state.every((reading) => reading !== undefined && sample.t - reading.t <= MAX_STATE_AGE_MS);
-        if (pid === undefined || !fresh) continue;
-        const [load, rpm, speed] = state;
-        const row = {load: load?.v ?? 0, krpm: (rpm?.v ?? 0) / 1000, kmh: speed?.v ?? 0, value: sample.v};
+        const fresh = (channel: string): number | null => {
+            const reading = latest.get(channel);
+            return reading !== undefined && sample.t - reading.t <= MAX_STATE_AGE_MS ? reading.v : null;
+        };
+        const [rpm, speed] = [fresh('rpm'), fresh('speed')];
+        if (pid === undefined || rpm === null || speed === null) continue;
+        const row = {load: fresh('engineLoad'), krpm: rpm / 1000, kmh: speed, value: sample.v};
         // Appending in place: a session holds tens of thousands of samples.
         const bucket = rows.get(pid) ?? [];
         bucket.push(row);
@@ -146,13 +157,14 @@ function rowsOf(samples: readonly Sample[]): Map<number, Row[]> {
     return rows;
 }
 
-// Solves the 4×4 normal equations (Gauss-Jordan, partial pivoting); null
-// when the state never varied enough to separate the slopes.
-function leastSquares(rows: readonly Row[]): readonly number[] | null {
-    const size = 4;
+// Solves the normal equations for an intercept plus the given slopes
+// (Gauss-Jordan, partial pivoting); null when the state never varied enough
+// to separate them.
+function leastSquares(rows: readonly Row[], slopes: readonly Slope[]): readonly number[] | null {
+    const size = 1 + slopes.length;
     const matrix = Array.from({length: size}, () => new Array<number>(size + 1).fill(0));
     for (const row of rows) {
-        const x = [1, row.load, row.krpm, row.kmh];
+        const x = [1, ...slopes.map((slope) => row[slope] ?? 0)];
         for (let i = 0; i < size; i++) {
             const target = matrix[i] ?? [];
             for (let j = 0; j < size; j++) target[j] = (target[j] ?? 0) + (x[i] ?? 0) * (x[j] ?? 0);
@@ -218,13 +230,19 @@ function fitOne(all: readonly Row[], span: number, options: FitOptions): Fitted 
     const sorted = all.map((row) => row.value).sort((a, b) => a - b);
     const min = quantile(sorted, options.trim);
     const max = quantile(sorted, 1 - options.trim);
-    const rows = all.filter((row) => row.value >= min && row.value <= max);
+    const inRange = all.filter((row) => row.value >= min && row.value <= max);
+    // With load in the state when enough samples have it, without otherwise.
+    const withLoad = inRange.filter((row) => row.load !== null);
+    const [rows, slopes] = withLoad.length >= options.minSamples ? [withLoad, ALL_SLOPES] : [inRange, WITHOUT_LOAD];
     const kept = rows.map((row) => row.value).sort((a, b) => a - b);
-    const solution = rows.length >= options.minSamples ? leastSquares(rows) : null;
+    const solution = rows.length >= options.minSamples ? leastSquares(rows, slopes) : null;
     if (!solution) return {fit: constantFit(kept, min, max, span, options), rSquared: null, samples: rows.length};
 
-    const [base = 0, perLoadPct = 0, perKrpm = 0, perKmh = 0] = solution;
-    const predict = (row: Row) => base + perLoadPct * row.load + perKrpm * row.krpm + perKmh * row.kmh;
+    const [base = 0, ...found] = solution;
+    const perLoadPct = slopes.includes('load') ? (found[slopes.indexOf('load')] ?? 0) : 0;
+    const perKrpm = found[slopes.indexOf('krpm')] ?? 0;
+    const perKmh = found[slopes.indexOf('kmh')] ?? 0;
+    const predict = (row: Row) => base + perLoadPct * (row.load ?? 0) + perKrpm * row.krpm + perKmh * row.kmh;
     const mean = kept.reduce((sum, value) => sum + value, 0) / kept.length;
     const total = rows.reduce((sum, row) => sum + (row.value - mean) ** 2, 0);
     const residual = rows.reduce((sum, row) => sum + (row.value - predict(row)) ** 2, 0);

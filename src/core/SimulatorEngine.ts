@@ -5,11 +5,10 @@ import type {
     CommandResult,
     DrivingModel,
     DtcStatus,
-    EcuProfile,
     EngineSnapshot,
     IgnitionState,
     LinkState,
-    ReadinessBytes,
+    SetIgnitionOptions,
     SimulatorLogger,
     VehicleProfile,
 } from './types';
@@ -19,9 +18,11 @@ import {PID_ENCODERS, encodeDtc, maskBytesFor, normalizeDtc, toHex} from './j197
 import {GASOLINE_PROFILE, gasolineDrivingModel} from '../profiles/gasoline';
 import {DEFAULT_ADAPTER} from '../adapters/presets';
 import {AUTO_PROTOCOL, bannerLines, handleAtCommand, handleStCommand, resetLinkState} from './at-commands';
-import {formatLines, hexToBytes, type EcuResponse} from './framing';
-import {ADDITIONAL_ECU_ID, ENGINE_ECU_ID, addressedEcus, isExtended} from './ecus';
-import {mode09Responses, type VehicleInfoSource} from './mode09';
+import {canFrames, formatLines, hexToBytes, type EcuResponse} from './framing';
+import {encodeGearReport, gearFor} from './gear';
+import {ENGINE_ECU_ID, addressedEcus, isExtended, type SourceAddresses} from './ecus';
+import {type Ecu, sourceAddressesOf, validateFramePadding, vehicleEcus} from './vehicle-ecus';
+import {mode09Responses} from './mode09';
 import {checkQueueCount, isPid, parseSnapshot} from './snapshot';
 import {waitMsFor, type CommandKind} from './timing';
 
@@ -70,9 +71,14 @@ const NEGATIVE_RESPONSE = 0x7f;
 const NRC_GENERAL_REJECT = 0x10;
 const NRC_CONDITIONS_NOT_CORRECT = 0x22;
 const NRC_SERVICE_NOT_SUPPORTED = 0x11;
+const NRC_RESPONSE_PENDING = 0x78;
+const CLEAR_PAYLOADS = {
+    positive: [0x44],
+    pending: [NEGATIVE_RESPONSE, 0x04, NRC_RESPONSE_PENDING],
+    reject: [NEGATIVE_RESPONSE, 0x04, NRC_GENERAL_REJECT],
+} as const;
 const MIL_BIT = 0x80;
 const MAX_DTC_COUNT = 0x7f;
-const ZERO_READINESS: ReadinessBytes = [0, 0, 0];
 // Key on, engine off: the moving parts read zero, the battery carries the bus.
 const KEY_ON_VALUES: Readonly<Record<number, number>> = {
     0x04: 0,
@@ -86,20 +92,24 @@ const KEY_ON_VALUES: Readonly<Record<number, number>> = {
     0x61: 0,
     0x62: 0,
 };
-const VOLTAGE = {off: 12.2, keyOn: 12.4, running: 14.1, cranked: 400};
-// One ECU as the engine serves it. The engine ECU carries the DTC lists and
-// the whole profile; the others answer their declared subset.
-interface Ecu {
-    id: string;
-    isEngine: boolean;
-    pids: ReadonlySet<number>;
-    readinessSinceClear: ReadinessBytes;
-    readinessThisDriveCycle: ReadinessBytes;
-    dtcReply: 'list' | 'empty' | 'reject' | 'none';
-    info: VehicleInfoSource;
-}
-
+const GEAR_PID = 0xa4;
+const STOPPED = 'STOPPED';
+// How long the vLinker took to print STOPPED after a search was cut short.
+const SEARCH_ABORT_MS = 670;
+const RESET_COMMANDS: ReadonlySet<string> = new Set(['ATZ', 'ATWS']);
+const SILENCE = {
+    response: '',
+    wire: '',
+    latency: {baseMs: 0, jitterMs: 0, waitMs: 0, searchMs: 0, totalMs: 0},
+    silent: true,
+} as const;
+// Recorded after the engine stopped: 12.4–12.5 V on the vLinkers.
+const VOLTAGE = {off: 12.4, keyOn: 12.4, running: 14.1, cranked: 400};
 interface Outcome {
+    /**
+     * The adapter drops the command: nothing is printed, not even the prompt.
+     */
+    silent?: boolean;
     lines: string[];
     kind: CommandKind;
     hint: number | null;
@@ -114,19 +124,6 @@ interface Outcome {
     state: LinkState;
 }
 
-function validateEcuProfile(ecu: EcuProfile): EcuProfile {
-    if (!ADDITIONAL_ECU_ID.test(ecu.id)) {
-        throw new Error(`additional ECU id "${ecu.id}" must be 7E9..7EF (7E8 is the engine ECU)`);
-    }
-    return ecu;
-}
-
-function validateFramePadding(padding: number | undefined): void {
-    if (padding !== undefined && !(Number.isInteger(padding) && padding >= 0 && padding <= 0xff)) {
-        throw new Error(`framePadding must be a byte (0..255), got ${padding}`);
-    }
-}
-
 export class SimulatorEngine {
     readonly profile: VehicleProfile;
     private readonly model: DrivingModel;
@@ -136,6 +133,7 @@ export class SimulatorEngine {
     private readonly logger: SimulatorLogger;
     private readonly latencyFor: ((command: string) => number) | null;
     private readonly ecus: readonly Ecu[];
+    private readonly sources: SourceAddresses;
     private readonly monitorMids: Set<number>;
     private persona: AdapterPersona;
     private link: LinkState;
@@ -148,6 +146,8 @@ export class SimulatorEngine {
     // Scenario controls: pinned PID values, power state, queued adapter errors.
     private overridesMap = new Map<number, number | null>();
     private ignitionState: IgnitionState = 'running';
+    // End of the engine ECU's after-run phase (clock of `now`); null → none.
+    private afterRunUntil: number | null = null;
     private faults: AdapterFault[] = [];
     private readonly commandListeners = new Set<(result: CommandResult) => void>();
 
@@ -166,56 +166,13 @@ export class SimulatorEngine {
         this.latencyFor = options.latencyFor ?? null;
         this.persona = options.adapter ?? DEFAULT_ADAPTER;
         this.link = resetLinkState(this.persona);
-        this.ecus = [
-            this.engineEcu(),
-            ...(this.profile.additionalEcus ?? []).map((ecu) => this.additionalEcu(validateEcuProfile(ecu))),
-        ];
+        this.ecus = vehicleEcus(this.profile);
+        this.sources = sourceAddressesOf(this.profile);
         this.monitorMids = new Set(this.profile.monitorTests.map((t) => t.mid));
         this.stored = (this.profile.storedDtcs ?? []).map(normalizeDtc);
         this.pending = (this.profile.pendingDtcs ?? []).map(normalizeDtc);
         this.permanent = (this.profile.permanentDtcs ?? []).map(normalizeDtc);
         if (this.stored.length > 0) this.captureFreezeFrame();
-    }
-
-    private engineEcu(): Ecu {
-        const profile = this.profile;
-        const performance = {infotype: profile.ignition === 'spark' ? 0x08 : 0x0b, counters: profile.performanceCounters};
-        return {
-            id: ENGINE_ECU_ID,
-            isEngine: true,
-            /**
-             * Status/readiness PIDs are always served in addition to the signal set.
-             */
-            pids: new Set([0x01, 0x41, ...profile.pids]),
-            readinessSinceClear: profile.readinessSinceClear,
-            readinessThisDriveCycle: profile.readinessThisDriveCycle,
-            dtcReply: 'list',
-            info: {
-                id: ENGINE_ECU_ID,
-                vin: profile.vin,
-                calibrationId: profile.calibrationId,
-                cvn: profile.cvn,
-                performance,
-                name: profile.ecuName,
-            },
-        };
-    }
-
-    private additionalEcu(ecu: EcuProfile): Ecu {
-        const readiness = ecu.readiness ?? ZERO_READINESS;
-        return {
-            id: ecu.id,
-            isEngine: false,
-            /**
-             * Status PIDs come with mode 01; an ECU without any signal PID
-             * (a module that only rejects DTC requests) stays silent on 01.
-             */
-            pids: new Set(ecu.pids.length > 0 ? [0x01, 0x41, ...ecu.pids] : []),
-            readinessSinceClear: readiness,
-            readinessThisDriveCycle: readiness,
-            dtcReply: ecu.dtcReply ?? 'empty',
-            info: {id: ecu.id, calibrationId: ecu.calibrationId, cvn: ecu.cvn, name: ecu.name},
-        };
     }
 
     get adapter(): AdapterPersona {
@@ -314,10 +271,17 @@ export class SimulatorEngine {
     /**
      * Key off puts every ECU to sleep (NO DATA / UNABLE TO CONNECT); key on
      * answers with a stopped engine; running is the driving cycle.
+     *
+     * @throws if `afterRunMs` is negative, not finite, or given with a state other than 'off'.
      */
-    setIgnition(state: IgnitionState): void {
+    setIgnition(state: IgnitionState, options: SetIgnitionOptions = {}): void {
+        const afterRunMs = options.afterRunMs ?? 0;
+        if (!Number.isFinite(afterRunMs) || afterRunMs < 0)
+            throw new Error(`afterRunMs must be a non-negative number, got ${afterRunMs}`);
+        if (afterRunMs > 0 && state !== 'off') throw new Error(`afterRunMs only applies to ignition 'off', got '${state}'`);
         this.ignitionState = state;
-        this.logger.info?.(`ignition → ${state}`);
+        this.afterRunUntil = afterRunMs > 0 ? this.now() + afterRunMs : null;
+        this.logger.info?.(`ignition → ${state}${afterRunMs > 0 ? ` (after-run ${afterRunMs} ms)` : ''}`);
     }
 
     get ignition(): IgnitionState {
@@ -382,6 +346,7 @@ export class SimulatorEngine {
         this.freezeFrame = parsed.freezeFrame ? new Map(parsed.freezeFrame.map(([pid, data]) => [pid, [...data]])) : null;
         this.overridesMap = new Map(Object.entries(parsed.overrides).map(([pid, value]) => [Number(pid), value]));
         this.ignitionState = parsed.ignition;
+        this.afterRunUntil = null;
         this.faults = [...parsed.pendingFaults];
     }
 
@@ -391,6 +356,25 @@ export class SimulatorEngine {
      */
     handleCommand(rawCommand: string): string {
         return this.execute(rawCommand).response;
+    }
+
+    /**
+     * What the adapter does when `rawCommand` arrives while `aborted` is
+     * still in progress: the running command is dropped, STOPPED is printed
+     * and the new command is not executed. An aborted protocol search is
+     * not locked in, so the next request searches again. Transports that
+     * model interruption call this instead of execute().
+     */
+    interrupt(aborted: CommandResult, rawCommand: string): CommandResult {
+        const searching = aborted.latency.searchMs > 0;
+        if (searching) this.link = {...this.link, searched: false};
+        const baseMs = searching ? SEARCH_ABORT_MS : this.persona.baseLatencyMs;
+        const latency = {baseMs, jitterMs: 0, waitMs: 0, searchMs: 0, totalMs: baseMs};
+        const command = rawCommand.replace(/\s+/g, '').toUpperCase();
+        const result = {command, response: STOPPED, wire: this.wireFor(STOPPED), latency, silent: false};
+        this.logger.debug?.(`${command} -> ${STOPPED} (aborted ${aborted.command})`);
+        for (const listener of this.commandListeners) listener(result);
+        return result;
     }
 
     /**
@@ -412,13 +396,18 @@ export class SimulatorEngine {
         const command = rawCommand.replace(/\s+/g, '').toUpperCase();
         const echo = this.link.echo ? rawCommand.replace(/[\r\n]/g, '') : null;
         const outcome = this.respond(command);
-        const latency = this.latencyOf(command, outcome);
-        const eol = this.eol();
-        const response = [...(echo === null ? [] : [echo]), ...outcome.lines].join(eol);
-        this.logger.debug?.(`${command} -> ${outcome.lines.join('|')} (+${latency.totalMs}ms)`);
-        const result = {command, response, wire: this.wireFor(response), latency};
+        const result = outcome.silent ? {command, ...SILENCE} : this.printed(command, echo, outcome);
+        this.logger.debug?.(
+            `${command} -> ${outcome.silent ? '(silence)' : outcome.lines.join('|')} (+${result.latency.totalMs}ms)`,
+        );
         for (const listener of this.commandListeners) listener(result);
         return result;
+    }
+
+    private printed(command: string, echo: string | null, outcome: Outcome): CommandResult {
+        const latency = this.latencyOf(command, outcome);
+        const response = [...(echo === null ? [] : [echo]), ...outcome.lines].join(this.eol());
+        return {command, response, wire: this.wireFor(response), latency, silent: false};
     }
 
     private eol(): string {
@@ -427,11 +416,23 @@ export class SimulatorEngine {
 
     private latencyOf(command: string, outcome: Outcome): CommandResult['latency'] {
         const waitMs = waitMsFor(outcome, this.link, this.persona);
-        const searchMs = outcome.searched ? (this.persona.protocolSearchMs ?? 0) : 0;
-        const baseMs = this.latencyFor ? this.latencyFor(command) : this.persona.baseLatencyMs;
+        const searchMs = outcome.searched ? this.searchMsFor(outcome) : 0;
+        const baseMs = this.latencyFor ? this.latencyFor(command) : this.baseMsFor(command, outcome);
         const jitterMs =
             this.latencyFor || this.persona.latencyJitterMs === 0 ? 0 : Math.round(this.jitter(this.persona.latencyJitterMs));
         return {baseMs, jitterMs, waitMs, searchMs, totalMs: Math.max(0, baseMs + jitterMs + waitMs + searchMs)};
+    }
+
+    // A search nobody answers runs through every protocol before giving up.
+    private searchMsFor(outcome: Outcome): number {
+        const found = this.persona.protocolSearchMs ?? 0;
+        return outcome.responders === 0 ? (this.persona.protocolSearchFailMs ?? found) : found;
+    }
+
+    private baseMsFor(command: string, outcome: Outcome): number {
+        const {baseLatencyMs, atLatencyMs = baseLatencyMs, resetLatencyMs = atLatencyMs} = this.persona;
+        if (RESET_COMMANDS.has(command)) return resetLatencyMs;
+        return outcome.kind === 'at' ? atLatencyMs : baseLatencyMs;
     }
 
     // Computes the outcome and applies the link state it carries — the one
@@ -466,7 +467,15 @@ export class SimulatorEngine {
             this.faults = remainingFaults;
             return {...none, lines: [fault], kind: 'fault', hint};
         }
+        if (this.dropsSilently(request)) return {...none, silent: true, lines: [], kind: 'obd', hint};
         return this.respondObdRequest(request, hint);
+    }
+
+    // A mode 01 request with more PIDs than the adapter handles, on an
+    // adapter that answers those with nothing at all.
+    private dropsSilently(request: string): boolean {
+        const {batch} = this.persona;
+        return batch.overflow === 'silent' && request.startsWith('01') && request.length / 2 - 1 > batch.maxPids;
     }
 
     // Protocol search (auto mode, first request): SEARCHING... precedes the
@@ -482,20 +491,30 @@ export class SimulatorEngine {
         if (searched && addressed.length === 0) {
             return {lines: [...preamble, 'UNABLE TO CONNECT'], kind: 'obd', hint, responders: 0, searched, state};
         }
-        const truncated =
-            this.persona.honorsResponseHint && hint !== null && hint < addressed.length ? addressed.slice(0, hint) : addressed;
+        const honored = this.persona.honorsResponseHint && hint !== null;
+        const countsFrames = honored && this.persona.hintCountsFrames === true;
+        // A zero hint awaits nothing, whatever the adapter counts.
+        const awaited = honored && (countsFrames ? hint === 0 : hint < addressed.length) ? addressed.slice(0, hint) : addressed;
         const lines =
-            truncated.length === 0
+            awaited.length === 0
                 ? ['NO DATA']
-                : formatLines(truncated, {
+                : formatLines(awaited, {
                       headers: this.link.headers,
                       spaces: this.link.spaces,
                       extended: isExtended(this.effectiveProtocol()),
                       interleave: !this.persona.batch.multiFrameClean,
                       padding: this.profile.framePadding,
                       trimSegments: this.persona.trimsFramePadding === true,
+                      padSingleFrames: this.persona.padsSingleFrames === true,
+                      trimRawSingleFrames: this.persona.trimsRawSingleFrames === true,
+                      sources: this.sources,
+                      ...(countsFrames ? {maxFrames: hint} : {}),
                   });
-        return {lines: [...preamble, ...lines], kind: 'obd', hint, responders: addressed.length, searched, state};
+        // What the hint is measured against: frames for a frame-counting adapter.
+        const responders = countsFrames
+            ? addressed.reduce((sum, response) => sum + canFrames(response.payload).length, 0)
+            : addressed.length;
+        return {lines: [...preamble, ...lines], kind: 'obd', hint, responders, searched, state};
     }
 
     private vehicleProtocol(): CanProtocol {
@@ -516,6 +535,7 @@ export class SimulatorEngine {
                 requestHeader: this.link.requestHeader,
                 receiveFilter: this.link.receiveFilter,
                 extended: isExtended(this.effectiveProtocol()),
+                sources: this.sources,
             },
         );
         return responses.filter((response) => ids.includes(response.ecu));
@@ -525,8 +545,8 @@ export class SimulatorEngine {
     // with 7F <sid> 11 (service not supported) by every ECU that answers
     // requests at all, so a physically addressed module rejects too.
     private respondObd(request: string): EcuResponse[] {
-        if (this.ignitionState === 'off') return [];
         const service = request.slice(0, 2);
+        if (this.ignitionState === 'off') return this.inAfterRun() ? this.afterRunRejection(service) : [];
         const argument = request.slice(2);
         switch (service) {
             case '01':
@@ -557,6 +577,16 @@ export class SimulatorEngine {
                         payload: [NEGATIVE_RESPONSE, Number.parseInt(service, 16), NRC_SERVICE_NOT_SUPPORTED],
                     }));
         }
+    }
+
+    private inAfterRun(): boolean {
+        return this.afterRunUntil !== null && this.now() < this.afterRunUntil;
+    }
+
+    // Engine just stopped: its ECU is still awake and refuses whatever it is
+    // asked (conditions not correct); every other module is already silent.
+    private afterRunRejection(service: string): EcuResponse[] {
+        return [{ecu: ENGINE_ECU_ID, payload: [NEGATIVE_RESPONSE, Number.parseInt(service, 16), NRC_CONDITIONS_NOT_CORRECT]}];
     }
 
     // Mode 01: single and batch requests, support-mask queries, one response
@@ -661,19 +691,16 @@ export class SimulatorEngine {
     // Mode 04 clears stored + pending codes and the freeze frame; permanent
     // codes survive (only the vehicle erases them after a verified repair).
     private respondDtcClear(): EcuResponse[] {
+        const answering = this.ecus.filter((ecu) => ecu.clearReply !== 'none');
         if (this.profile.clearRequiresEngineOff && this.ignitionState === 'running') {
-            return this.ecus
-                .filter((ecu) => ecu.dtcReply !== 'none')
-                .map((ecu) => ({ecu: ecu.id, payload: [NEGATIVE_RESPONSE, 0x04, NRC_CONDITIONS_NOT_CORRECT]}));
+            return answering.map((ecu) => ({ecu: ecu.id, payload: [NEGATIVE_RESPONSE, 0x04, NRC_CONDITIONS_NOT_CORRECT]}));
         }
         this.stored = [];
         this.pending = [];
         this.freezeFrame = null;
-        return this.ecus.flatMap((ecu) => {
-            if (ecu.dtcReply === 'none') return [];
-            if (ecu.dtcReply === 'reject') return [{ecu: ecu.id, payload: [NEGATIVE_RESPONSE, 0x04, NRC_GENERAL_REJECT]}];
-            return [{ecu: ecu.id, payload: [0x44]}];
-        });
+        return answering.flatMap((ecu) =>
+            ecu.clearReply === 'none' ? [] : [{ecu: ecu.id, payload: [...CLEAR_PAYLOADS[ecu.clearReply]]}],
+        );
     }
 
     private captureFreezeFrame(): void {
@@ -691,16 +718,27 @@ export class SimulatorEngine {
     private voltage(): string {
         const rpm = this.modelValue(0x0c) ?? 0;
         const base = this.ignitionState === 'off' ? VOLTAGE.off : rpm > VOLTAGE.cranked ? VOLTAGE.running : VOLTAGE.keyOn;
-        return `${(base + this.jitter(0.15)).toFixed(1)}V`;
+        return `${(base + (this.persona.voltageOffsetV ?? 0) + this.jitter(0.15)).toFixed(1)}V`;
     }
 
     private encodeCurrentValue(ecu: Ecu, pid: number): number[] | null {
         if (!ecu.pids.has(pid)) return null;
+        if (pid === GEAR_PID && this.profile.transmissionPid === 'gear') return this.gearReport();
         const encoder = PID_ENCODERS[pid];
         if (!encoder) return null;
         const value = this.modelValue(pid);
         if (value === null) return null;
         return encoder.encode(value);
+    }
+
+    // An override of the PID is the gear itself; otherwise it follows from
+    // engine and road speed (overrides of those included).
+    private gearReport(): number[] | null {
+        if (this.overridesMap.has(GEAR_PID)) {
+            const pinned = this.overridesMap.get(GEAR_PID) ?? null;
+            return pinned === null ? null : encodeGearReport(pinned);
+        }
+        return encodeGearReport(gearFor(this.modelValue(0x0c) ?? 0, this.modelValue(0x0d) ?? 0));
     }
 
     // Overrides win, then the power state, then the driving model.

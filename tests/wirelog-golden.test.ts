@@ -1,6 +1,13 @@
 import {readFileSync} from 'node:fs';
 import {describe, expect, it} from 'vitest';
-import {CLONE_V21_ADAPTER, REFERENCE_PROFILE, SimulatorEngine, VLINKER_ADAPTER} from '../src/index';
+import {
+    CLONE_OBDII_ADAPTER,
+    CLONE_V21_ADAPTER,
+    REFERENCE_PROFILE,
+    SimulatorEngine,
+    VLINKER_ADAPTER,
+    VLINKER_FD_ADAPTER,
+} from '../src/index';
 import type {AdapterPersona} from '../src/index';
 
 // Golden tests against recordings of real adapters on the reference vehicle
@@ -10,8 +17,11 @@ import type {AdapterPersona} from '../src/index';
 // since the simulated vehicle is not the recorded one. The VIN in the
 // fixtures is already replaced by the simulator's.
 //
-// Coverage gap: neither recording sends ATH1, so 29-bit header framing
-// (18DAF1xx) is only asserted synthetically in fidelity.test.ts.
+// The two '-probe' fixtures hold AutoPulse's adapter probe (identity
+// commands, one request with ATH1, a batch the clone drops) — the only
+// recordings with 29-bit headers on, so header lines keep their address and
+// PCI byte unmasked. An empty recorded response is the app's timeout: the
+// adapter printed nothing.
 
 interface WireLogEntry {
     c: string;
@@ -26,12 +36,16 @@ const HEX_LINE = /^[0-9A-F]+$/;
 const SEGMENT_LINE = /^([0-9A-F]):([0-9A-F]+)$/;
 const VOLTAGE_LINE = /^\d+\.\dV$/;
 const KEEP_PREFIX = 4;
+// '18DAF101' + PCI byte.
+const HEADER_LINE = /^18DAF1/;
+const KEEP_HEADER = 10;
 
 // '4100BE3EA813' → '4100XXXXXXXX', '1:5A5A5A314B5A42' → '1:XXXXXXXXXXXXXX'.
 function maskLine(line: string): string {
     if (VOLTAGE_LINE.test(line)) return '<voltage>';
     const segment = SEGMENT_LINE.exec(line);
     if (segment) return `${segment[1]}:${'X'.repeat((segment[2] ?? '').length)}`;
+    if (HEADER_LINE.test(line)) return line.slice(0, KEEP_HEADER) + 'X'.repeat(line.length - KEEP_HEADER);
     if (HEX_LINE.test(line) && line.length > KEEP_PREFIX)
         return line.slice(0, KEEP_PREFIX) + 'X'.repeat(line.length - KEEP_PREFIX);
     return line;
@@ -60,6 +74,7 @@ function replay(name: string, adapter: AdapterPersona): void {
     const engine = new SimulatorEngine({now: () => 60_000, seed: 7, adapter, profile: REFERENCE_PROFILE});
     for (const entry of entries) {
         const simulated = engine.execute(entry.c);
+        expect(simulated.silent, `${name}: ${entry.c} silence`).toBe(entry.r === '');
         if (entry.c in KNOWN_DEVIATIONS) {
             expect(shape(simulated.response, entry.c)[0], `${name}: ${entry.c} length line`).toMatch(LENGTH_LINE);
             expect(shape(entry.r, entry.c)[0], `${name}: ${entry.c} recorded length line`).toMatch(LENGTH_LINE);
@@ -76,6 +91,14 @@ describe('wire-log golden replay', () => {
 
     it('matches the v2.1 clone recording shape for shape', () => {
         replay('clone-v2.1', CLONE_V21_ADAPTER);
+    });
+
+    it('matches the vLinker FD probe, 29-bit headers included', () => {
+        replay('vlinker-fd-probe', VLINKER_FD_ADAPTER);
+    });
+
+    it('matches the padding clone probe, dropped batch included', () => {
+        replay('clone-obdii-probe', CLONE_OBDII_ADAPTER);
     });
 
     it('charges a multi-second protocol search on the vLinker like the recording', () => {

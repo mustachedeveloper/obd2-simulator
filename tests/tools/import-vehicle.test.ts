@@ -1,7 +1,8 @@
 import {describe, expect, it} from 'vitest';
 import {assertNoLeak, syntheticVin} from '../../tools/import-vehicle/anonymize';
 import {buildCycle, toSeries} from '../../tools/import-vehicle/cycle';
-import {buildIdentity} from '../../tools/import-vehicle/identity';
+import {decodeMode01, withDecodedSamples} from '../../tools/import-vehicle/decode';
+import {buildIdentity, sourceAddresses} from '../../tools/import-vehicle/identity';
 import {ecuPayloads, framePaddingOf} from '../../tools/import-vehicle/responses';
 import {fitSignals} from '../../tools/import-vehicle/signals';
 import {deriveTraits, deriveWarmup} from '../../tools/import-vehicle/traits';
@@ -120,7 +121,14 @@ describe('buildIdentity', () => {
         x('03', '4300\r7F0310\r4300\r\r'),
         x('0A', 'NO DATA\r\r'),
         x('010C5E0D 1', '009\r0:410C153E5E00\r1:320D00AAAAAAAA\r\r'),
-        x('04', '7F0422\r7F0422\r7F0422\r\r'),
+        x('04', '7F0422\r7F0422\r7F0422\r7F0422\r\r'),
+        x('04', '44\r7F0478\r7F0478\r44\r\r'),
+        // The adapter probe: headers on for one request.
+        x('ATH1', 'OK\r\r'),
+        x('010C 1', '18DAF10104410C0E86AAAAAA\r18DAF10204410C0E88AAAAAA\r\r'),
+        x('ATH0', 'OK\r\r'),
+        x('01A4 1', '41A401000000\r\r'),
+        x('01A4 1', '41A401200000\r\r'),
     ];
     const {profile, report, secrets} = buildIdentity(exchanges, {name: 'gasoline', vinSerial: '123456'});
 
@@ -165,20 +173,37 @@ describe('buildIdentity', () => {
     it('describes the other ECUs', () => {
         expect(profile.supportsPermanentDtcs).toBe(false);
         expect(profile.additionalEcus).toEqual([
-            {id: '7EA', pids: [], dtcReply: 'reject'},
+            {id: '7EA', pids: [], dtcReply: 'reject', clearReply: 'pending'},
             {
                 id: '7E9',
+                sourceAddress: 0x02,
                 name: 'TCM-TransmisCtrl',
                 pids: [0x04, 0x05, 0x0c, 0x0d, 0x0f, 0x33, 0x42, 0x46],
                 readiness: [0x04, 0x00, 0x00],
                 calibrationId: '0CW906556EC+0562',
                 cvn: 'A9C9EF55',
             },
+            // Answers mode 04 and nothing else.
+            {id: '7EB', pids: [], dtcReply: 'none', clearReply: 'pending'},
         ]);
     });
 
     it('records the frame padding byte', () => {
         expect(profile.framePadding).toBe(0xaa);
+    });
+
+    it('reads the 29-bit source addresses off a headers-on exchange', () => {
+        expect(profile.sourceAddress).toBe(0x01);
+        expect(profile.additionalEcus?.find((ecu) => ecu.id === '7E9')?.sourceAddress).toBe(0x02);
+        expect(sourceAddresses([x('ATH1', 'OK'), x('017A', '18 DA F1 01 10 09 41 7A\r18 DA F1 01 21 00\r\r')])).toEqual([0x01]);
+        expect(sourceAddresses([x('ATH1', 'OK'), x('ATZ', 'ELM327'), x('010C', '18DAF10104410C0E86\r\r')])).toEqual([]);
+        expect(sourceAddresses([x('010C', '410C0E86\r\r')])).toEqual([]);
+    });
+
+    it('notices a PID A4 that carries the gear alone', () => {
+        expect(profile.transmissionPid).toBe('gear');
+        const ratio = exchanges.map((exchange) => (exchange.c === '01A4 1' ? {...exchange, r: '41A40310036B\r\r'} : exchange));
+        expect(buildIdentity(ratio, {name: 'gasoline', vinSerial: '123456'}).profile.transmissionPid).toBeUndefined();
     });
 
     it('notices a vehicle that refuses to clear codes while running', () => {
@@ -338,6 +363,26 @@ describe('fitSignals', () => {
         expect(fitSignals([stale], [0x33]).signals).toEqual({});
     });
 
+    it('fits against rpm and speed alone when load was hardly ever logged with the channel', () => {
+        // EGT = 300 + 80·krpm + 1.5·kmh, with load logged only in the first two samples.
+        const egt = Array.from({length: 400}, (_, i) => {
+            const t = i * 1000;
+            const rpm = 900 + ((i * 131) % 3000);
+            const speed = (i * 3) % 120;
+            return [
+                ...(i < 2 ? [{t, p: 'engineLoad', v: 20}] : []),
+                {t: t + 10, p: 'rpm', v: rpm},
+                {t: t + 20, p: 'speed', v: speed},
+                {t: t + 30, p: 'egtB1S1', v: 300 + (80 * rpm) / 1000 + 1.5 * speed},
+            ];
+        }).flat();
+        const fit = fitSignals([egt], [0x78]).signals[0x78];
+        expect(fit?.base).toBeCloseTo(300, 0);
+        expect(fit?.perLoadPct).toBe(0);
+        expect(fit?.perKrpm).toBeCloseTo(80, 0);
+        expect(fit?.perKmh).toBeCloseTo(1.5, 2);
+    });
+
     it('does not fit slopes to a handful of samples', () => {
         const few = drive(0).slice(0, 7 * 20);
         expect(fitSignals([few], [0x0b]).signals[0x0b]).toBeUndefined(); // lively and unexplained → generic formula
@@ -395,5 +440,44 @@ describe('deriveTraits', () => {
 
     it('leaves out what was never recorded', () => {
         expect(deriveTraits([])).toEqual({});
+    });
+});
+
+describe('decodeMode01', () => {
+    const at = (c: string, r: string) => decodeMode01({t: 1, c, r});
+
+    it("decodes single and batch answers of the engine ECU with the encoders' byte counts", () => {
+        expect(at('0178 1', '00B\r0:417803179A00\r1:0000000000AAAA\r\r')).toEqual([{t: 1, p: 'egtB1S1', v: 564.2}]);
+        expect(at('013C 1', '413C1A2BAAAAAA\r\r')).toEqual([{t: 1, p: 'catalystTemp', v: 629.9}]);
+        expect(at('010C0D055E 1', '00B\r0:410C0EE40D00\r1:05565E0017AAAA\r\r')).toEqual([
+            {t: 1, p: 'rpm', v: 953},
+            {t: 1, p: 'speed', v: 0},
+        ]);
+        expect(at('0104115C 1', '41043811205C89\r\r')).toEqual([{t: 1, p: 'engineLoad', v: (0x38 * 100) / 255}]);
+        expect(at('01430E 1', '4143002A0E96\r\r')).toEqual([
+            {t: 1, p: 'absoluteLoad', v: (0x2a * 100) / 255},
+            {t: 1, p: 'timingAdvance', v: 11},
+        ]);
+    });
+
+    it('ignores other services, errors, the second ECU and payloads it cannot walk', () => {
+        expect(at('0902', '014\r0:490201544D42\r1:414E384E5A3253\r2:43393939393939\r\r')).toEqual([]);
+        expect(at('0178 1', 'NO DATA\r\r')).toEqual([]);
+        expect(at('010F', '410F5A\r410F53\r\r')).toEqual([{t: 1, p: 'intakeTemp', v: 50}]);
+        expect(at('01FF 1', '41FF01\r\r')).toEqual([]);
+    });
+
+    it("replaces the app's decoding of a fitted channel, keeps the rest", () => {
+        const samples = [
+            {t: 0, p: 'rpm', v: 900},
+            {t: 0, p: 'egtB1S1', v: 300},
+            {t: 0, p: 'coolant', v: 90},
+        ];
+        const merged = withDecodedSamples(samples, [{t: 1, c: '0178 1', r: '00B\r0:417803179A00\r1:0000000000AAAA\r\r'}]);
+        expect(merged).toEqual([
+            {t: 0, p: 'rpm', v: 900},
+            {t: 0, p: 'coolant', v: 90},
+            {t: 1, p: 'egtB1S1', v: 564.2},
+        ]);
     });
 });

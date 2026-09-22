@@ -91,7 +91,7 @@ function serveClient(
             if (line.length > options.maxLineLength) reply(engine.wireFor('?'), 0);
             else if (line.length > 0) {
                 const result = engine.execute(line);
-                reply(result.wire, Math.round(result.latency.totalMs * options.latencyScale));
+                if (!result.silent) reply(result.wire, Math.round(result.latency.totalMs * options.latencyScale));
             }
             newline = buffer.search(LINE_END);
         }

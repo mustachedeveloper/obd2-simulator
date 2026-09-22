@@ -22,12 +22,14 @@ export {PID_ENCODERS, encodeDtc, normalizeDtc} from './core/j1979';
 export type {PidEncoder} from './core/j1979';
 export {
     ADAPTER_PRESETS,
+    CLONE_OBDII_ADAPTER,
     CLONE_V21_ADAPTER,
     DEFAULT_ADAPTER,
     GENUINE_ELM_ADAPTER,
     REFERENCE_SECOND_ECU_PIDS,
     STN_ADAPTER,
     VLINKER_ADAPTER,
+    VLINKER_FD_ADAPTER,
 } from './adapters/presets';
 export {ADAPTIVE_TIMING_FACTORS, ELM_DEFAULT_TIMEOUT_HEX} from './core/timing';
 export {ADAPTER_FAULTS} from './core/types';
@@ -38,6 +40,7 @@ export type {
     AdapterFault,
     EngineSnapshot,
     IgnitionState,
+    SetIgnitionOptions,
     AdapterPersona,
     AdapterStnIdentity,
     AdaptiveTimingMode,

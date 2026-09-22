@@ -36,9 +36,15 @@ export type CanProtocol = '6' | '7' | '8' | '9';
 export interface EcuProfile {
     /**
      * 11-bit CAN response id, 7E9..7EF ('7E9'); on 29-bit vehicles the id
-     * maps to source address 0x10 + 8·n (7E9 → 18DAF118), not configurable.
+     * maps to source address 0x10 + 8·n (7E9 → 18DAF118) unless
+     * `sourceAddress` says otherwise.
      */
     id: string;
+    /**
+     * The ECU's address on a 29-bit bus: it answers as 18DAF1xx and is
+     * addressed physically as 18DAxxF1. One byte, unique per vehicle.
+     */
+    sourceAddress?: number;
     /**
      * Mode 09 infotype 0A. Absent → the ECU does not answer 090A.
      */
@@ -62,6 +68,14 @@ export interface EcuProfile {
      * 'empty'.
      */
     dtcReply?: 'empty' | 'reject' | 'none';
+    /**
+     * Mode 04: 'positive' → 44, 'pending' → 7F 04 78 (response pending, and
+     * nothing after it — what two modules of the recorded car send),
+     * 'reject' → 7F 04 10, 'none' → silent. Default: follows `dtcReply`
+     * (positive / reject / none). A module can answer mode 04 alone:
+     * `{pids: [], dtcReply: 'none', clearReply: 'pending'}`.
+     */
+    clearReply?: 'positive' | 'pending' | 'reject' | 'none';
 }
 
 /**
@@ -122,6 +136,18 @@ export interface VehicleProfile {
      * Default false.
      */
     clearRequiresEngineOff?: boolean;
+    /**
+     * What PID 0xA4 carries. 'ratio' (default): the gear ratio in bytes C–D,
+     * no data at standstill. 'gear': the engaged gear alone — support byte
+     * 01, gear in the upper nibble of byte B (0 at standstill), estimated
+     * from engine speed per road speed; an override of 0xA4 is the gear.
+     */
+    transmissionPid?: 'ratio' | 'gear';
+    /**
+     * The engine ECU's address on a 29-bit bus (see
+     * `EcuProfile.sourceAddress`); default 0x10.
+     */
+    sourceAddress?: number;
 }
 
 /**
@@ -148,6 +174,17 @@ export type LinkStatus = 'disconnected' | 'connecting' | 'connected';
  * stopped, or running (the driving cycle).
  */
 export type IgnitionState = 'off' | 'key-on' | 'running';
+
+export interface SetIgnitionOptions {
+    /**
+     * Only with 'off': how long the engine ECU stays awake after the engine
+     * stopped. Until then it rejects every request with 7F xx 22 (conditions
+     * not correct) while the other ECUs are already silent; afterwards NO
+     * DATA. The recorded car does this for 10–15 s. Default 0 — asleep at
+     * once. Not part of a snapshot: restore() lands after the phase.
+     */
+    afterRunMs?: number;
+}
 
 /**
  * Error texts an ELM327 prints instead of a response; injectable per request.
@@ -199,6 +236,13 @@ export interface AdapterBatchCapability {
      */
     maxPids: number;
     /**
+     * What a request beyond `maxPids` gets. 'no-data' (default) prints NO
+     * DATA; 'silent' prints nothing at all — not even the prompt — until the
+     * next command, the way one recorded clone drops every request with
+     * three or more PIDs and leaves the app to its timeout.
+     */
+    overflow?: 'no-data' | 'silent';
+    /**
      * false + 2 ECUs → multi-frame segments of the two ECUs interleave
      * (the "dirty" output seen on clones). Irrelevant with one ECU.
      */
@@ -239,6 +283,12 @@ export interface AdapterPersona {
      * the full ATST window and print every response.
      */
     honorsResponseHint: boolean;
+    /**
+     * true → the honored hint counts CAN frames, not responses: '017A 1'
+     * prints the length line and the first frame of a multi-frame answer and
+     * nothing else (seen on the vLinker). Default false.
+     */
+    hintCountsFrames?: boolean;
     batch: AdapterBatchCapability;
     /**
      * false → ATAT0/1/2 answer OK but do not change the wait window.
@@ -285,6 +335,46 @@ export interface AdapterPersona {
      * genuine chips and the vLinker do.
      */
     trimsFramePadding?: boolean;
+    /**
+     * true → with headers on, a single frame is printed only as far as its
+     * PCI length says ('18DAF10104410C0E7E'), without the frame's padding;
+     * multi-frame output keeps whole frames. Seen on the vLinkers. Default
+     * false: all eight bytes.
+     */
+    trimsRawSingleFrames?: boolean;
+    /**
+     * true → single-frame answers are printed as the whole CAN frame, so
+     * the vehicle's frame padding trails them with headers off
+     * ('410C0E88AAAAAA'). Seen on a v2.1 clone; needs `framePadding` on the
+     * vehicle. Default false.
+     */
+    padsSingleFrames?: boolean;
+    /**
+     * ATCS output. Default 'T:00 R:00 F:00'; the recorded adapters print
+     * 'T:00 R:00 F:0', 'R:00' or just 'OK'.
+     */
+    canStatus?: string;
+    /**
+     * Time a search costs when no ECU answers (SEARCHING... → UNABLE TO
+     * CONNECT); adapters try every protocol before giving up, so it is
+     * usually longer. Default: `protocolSearchMs`.
+     */
+    protocolSearchFailMs?: number;
+    /**
+     * Fixed latency of AT commands when it differs from OBD requests (the
+     * clones take 60–70 ms for an `OK`). Default: `baseLatencyMs`.
+     */
+    atLatencyMs?: number;
+    /**
+     * Fixed latency of ATZ / ATWS — a real reset takes about a second on
+     * the vLinkers. Default: the AT latency.
+     */
+    resetLatencyMs?: number;
+    /**
+     * Added to every ATRV reading: cheap adapters measure the supply rail
+     * with an uncalibrated divider (one clone reads 1.6 V high). Default 0.
+     */
+    voltageOffsetV?: number;
 }
 
 export type AdaptiveTimingMode = 0 | 1 | 2;
@@ -355,4 +445,10 @@ export interface CommandResult {
      */
     wire: string;
     latency: CommandLatency;
+    /**
+     * true → the adapter prints nothing for this command, not even the
+     * prompt (`wire` is empty); transports stay quiet and the app runs into
+     * its timeout. See `AdapterBatchCapability.overflow`.
+     */
+    silent: boolean;
 }

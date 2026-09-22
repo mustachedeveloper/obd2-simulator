@@ -38,8 +38,10 @@ export const DEFAULT_ADAPTER: AdapterPersona = {
 
 /**
  * Vgate vLinker (BLE name IOS-Vlink): honors the hint, so with '010C 1'
- * only the engine ECU is visible; without a hint every ECU prints. Its
- * auto-protocol search on the reference car took ~6 s.
+ * only the engine ECU is visible; without a hint every ECU prints. The hint
+ * counts CAN frames — a hinted multi-frame answer stops after that many.
+ * Its auto-protocol search on the reference car took 6.3 s (7.1 s with the
+ * ignition off), a reset 1.2 s.
  */
 export const VLINKER_ADAPTER: AdapterPersona = {
     name: 'vlinker',
@@ -48,13 +50,36 @@ export const VLINKER_ADAPTER: AdapterPersona = {
     identifier: null,
     stn: null,
     honorsResponseHint: true,
+    hintCountsFrames: true,
     batch: {supported: true, maxPids: 6, multiFrameClean: true},
     adaptiveTiming: true,
     ignitionMonitor: true,
     baseLatencyMs: 32,
     latencyJitterMs: 6,
     defaultSpaces: true,
-    protocolSearchMs: 6000,
+    protocolSearchMs: 6350,
+    protocolSearchFailMs: 7100,
+    resetLatencyMs: 1200,
+    canStatus: 'T:00 R:00 F:0',
+    trimsRawSingleFrames: true,
+};
+
+/**
+ * Vgate vLinker FD (BLE name "vLinker FD-IOS"): an STN1151 behind an
+ * ELM327 v2.2 banner. Same hint handling and framing as the older vLinker,
+ * a little quicker at everything.
+ */
+export const VLINKER_FD_ADAPTER: AdapterPersona = {
+    ...VLINKER_ADAPTER,
+    name: 'vlinker-fd',
+    banner: 'ELM327 v2.2',
+    // STDI was never recorded; the firmware string is.
+    stn: {deviceId: 'vLinker FD', firmware: 'STN1151 v4.3.2'},
+    baseLatencyMs: 30,
+    latencyJitterMs: 5,
+    protocolSearchMs: 4850,
+    protocolSearchFailMs: 5700,
+    resetLatencyMs: 960,
 };
 
 /**
@@ -73,15 +98,47 @@ export const CLONE_V21_ADAPTER: AdapterPersona = {
     honorsResponseHint: false,
     batch: {supported: true, maxPids: 6, multiFrameClean: true},
     adaptiveTiming: false,
-    ignitionMonitor: false,
+    ignitionMonitor: true,
     baseLatencyMs: 20,
     latencyJitterMs: 15,
     defaultTimeoutHex: 'FF',
     defaultSpaces: true,
     protocolSearchMs: 150,
+    protocolSearchFailMs: 4600,
+    atLatencyMs: 68,
     bannerPrefix: 'OK',
     bannerBlankLine: false,
     trimsFramePadding: true,
+    canStatus: 'OK',
+    voltageOffsetV: 1.6,
+};
+
+/**
+ * Another v2.1 clone (BLE name OBDII): ignores the hint as well, but prints
+ * whole CAN frames — the vehicle's padding trails single frames too
+ * ('410C0E88AAAAAA') — and drops any request with three or more PIDs
+ * without printing anything, prompt included (194 of 194 recorded
+ * attempts). Not modelled: it numbers a second ECU's multi-frame segments
+ * on from the first ('3:13490401…').
+ */
+export const CLONE_OBDII_ADAPTER: AdapterPersona = {
+    name: 'clone-obdii',
+    banner: 'ELM327 v2.1',
+    description: ELM_DESCRIPTION,
+    identifier: null,
+    stn: null,
+    honorsResponseHint: false,
+    batch: {supported: true, maxPids: 2, multiFrameClean: true, overflow: 'silent'},
+    adaptiveTiming: false,
+    ignitionMonitor: true,
+    baseLatencyMs: 49,
+    latencyJitterMs: 8,
+    defaultTimeoutHex: 'FF',
+    defaultSpaces: true,
+    protocolSearchMs: 540,
+    atLatencyMs: 60,
+    padsSingleFrames: true,
+    canStatus: 'R:00',
 };
 
 /**
@@ -125,7 +182,9 @@ export const STN_ADAPTER: AdapterPersona = {
 export const ADAPTER_PRESETS: Readonly<Record<string, AdapterPersona>> = {
     default: DEFAULT_ADAPTER,
     vlinker: VLINKER_ADAPTER,
+    'vlinker-fd': VLINKER_FD_ADAPTER,
     clone: CLONE_V21_ADAPTER,
+    'clone-obdii': CLONE_OBDII_ADAPTER,
     genuine: GENUINE_ELM_ADAPTER,
     stn: STN_ADAPTER,
 };

@@ -22,12 +22,14 @@ function renderEcus(profile: VehicleProfile): string {
         [
             '{',
             `id: ${quoted(ecu.id)},`,
+            ecu.sourceAddress === undefined ? '' : `sourceAddress: ${hex(ecu.sourceAddress)},`,
             ecu.name ? `name: ${quoted(ecu.name)},` : '',
             `pids: ${hexList(ecu.pids)},`,
             ecu.readiness ? `readiness: ${hexList(ecu.readiness)},` : '',
             ecu.calibrationId ? `calibrationId: ${quoted(ecu.calibrationId)},` : '',
             ecu.cvn ? `cvn: ${quoted(ecu.cvn)},` : '',
             ecu.dtcReply ? `dtcReply: ${quoted(ecu.dtcReply)},` : '',
+            ecu.clearReply ? `clearReply: ${quoted(ecu.clearReply)},` : '',
             '},',
         ]
             .filter((line) => line !== '')
@@ -63,6 +65,8 @@ export function renderProfileModule(profile: VehicleProfile, provenance: Simulat
         renderEcus(profile),
         `supportsPermanentDtcs: ${profile.supportsPermanentDtcs !== false},`,
         profile.framePadding === undefined ? '' : `framePadding: ${hex(profile.framePadding)},`,
+        profile.transmissionPid === undefined ? '' : `transmissionPid: ${quoted(profile.transmissionPid)},`,
+        profile.sourceAddress === undefined ? '' : `sourceAddress: ${hex(profile.sourceAddress)},`,
         '};',
         '',
         'export const PROVENANCE: SimulatorProvenance = {',
