@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/) (0.x: minor versions may break).
 
-## [1.0.0] - 2026-08-22
+## [1.0.0] - 2026-09-23
 
 First stable release. From here on the public API follows semantic
 versioning: everything exported from `obd2-simulator` and
