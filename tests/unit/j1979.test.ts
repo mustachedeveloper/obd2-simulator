@@ -28,9 +28,10 @@ const KNOWN_ENCODINGS: readonly [number, number, number[]][] = [
     [0x5e, 1.5, [0x00, 0x1e]], // fuel rate: (256A + B)/20
     // As recorded from a real car: 4134 8000 8000, 4170 02 0000 0CC2 …, 4171 07 3A 3A 00 00 02, 418B 51 00 …
     [0x34, 1, [0x80, 0x00, 0x80, 0x00]], // λ: (256A + B)/32768, current (256C + D)/256 − 128
-    // Pump current follows λ: ≈ 1.1 mA per unit of λ − 1, 1.3 mA at fuel cut (recorded 4134FFFF814D).
+    // Pump current follows λ: ≈ 1.1 mA per unit of λ − 1 when lean, 2 mA when rich, 1.3 mA at fuel cut (recorded 4134FFFF814D).
     [0x34, 2, [0xff, 0xff, 0x81, 0x4d]],
-    [0x34, 0.9, [0x73, 0x33, 0x7f, 0xe4]],
+    [0x34, 0.9, [0x73, 0x33, 0x7f, 0xcd]],
+    [0x34, 1.1, [0x8c, 0xcd, 0x80, 0x1c]],
     [0x65, 1, [0x02, 0x02]], // aux I/O: A advertises the automatic-transmission drive status, B carries it
     [0x65, 0, [0x02, 0x00]],
     [0x6d, 5000, [0x07, 0x01, 0xf4, 0x01, 0xf4, 80, 0, 0, 0, 0, 0]], // fuel pressure control: rail A commanded + actual (10 kPa/bit), fuel temp 40 °C

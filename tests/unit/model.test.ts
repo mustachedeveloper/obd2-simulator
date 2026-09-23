@@ -69,8 +69,63 @@ describe('DefaultDrivingModel', () => {
         const coolant = [0, 60, 300, 3000].map((s) => at(0x05, s) ?? 0);
         expect(coolant[0]).toBe(22);
         for (let i = 1; i < coolant.length; i++) expect(coolant[i]).toBeGreaterThan(coolant[i - 1] ?? 0);
-        expect(coolant[3]).toBeCloseTo(90, 0);
+        expect(coolant[3]).toBeGreaterThan(86);
+        expect(coolant[3]).toBeLessThan(100);
         expect(at(0x5c, 3000)).toBeGreaterThan(at(0x05, 3000) ?? 0); // oil settles hotter
+    });
+
+    it('runs the warm coolant cooler when standing and hotter on the move, as the recorded thermostat does', () => {
+        // A recorded 19-minute loop: 12 minutes standing, 6 at 70 km/h, one standing.
+        const repeat = <T>(value: T, times: number) => Array.from({length: times}, () => value);
+        const cycle = {
+            stepSeconds: 60,
+            speedKmh: [...repeat(0, 12), ...repeat(70, 6), 0],
+            rpm: [...repeat(930, 12), ...repeat(2000, 6), 930],
+            throttlePct: [...repeat(12, 12), ...repeat(25, 6), 12],
+            engineLoadPct: [...repeat(20, 12), ...repeat(35, 6), 20],
+        };
+        const model = new DefaultDrivingModel({cycle, traits: {coolantTargetC: 93, coolantWarmupTauS: 60}});
+        const loop = 3 * 19 * 60; // long warm; times below are positions in the fourth loop
+        // Samples interpolate: the speed ramps 0 → 70 between 660 s and 720 s.
+        const standing = model.value(0x05, loop + 640, noJitter) ?? 0; // standing for the last 5 min
+        const moving = model.value(0x05, loop + 1020, noJitter) ?? 0; // 5 min at 70 km/h behind it
+        expect(standing).toBeCloseTo(89, 0); // target − 4
+        expect(moving).toBeGreaterThan(96); // target + 3.5 … 7
+        expect(model.value(0x5c, loop + 1020, noJitter)).toBeCloseTo(model.value(0x5c, loop + 640, noJitter) ?? 0, 0); // oil does not swing
+        // Shortly into the move the coolant has only started to climb: it follows the last 5 minutes, not the instant.
+        const justMoving = model.value(0x05, loop + 740, noJitter) ?? 0;
+        expect(justMoving).toBeGreaterThan(standing);
+        expect(justMoving).toBeLessThan(moving - 2);
+    });
+
+    it('lags the exhaust-side temperatures behind a load step', () => {
+        // One-second samples so the load really steps (samples interpolate): 20 % for 120 s, then 90 %.
+        const repeat = <T>(value: T, times: number) => Array.from({length: times}, () => value);
+        const cycle = {
+            stepSeconds: 1,
+            speedKmh: repeat(50, 240),
+            rpm: [...repeat(1800, 120), ...repeat(3000, 120)],
+            throttlePct: [...repeat(20, 120), ...repeat(80, 120)],
+            engineLoadPct: [...repeat(20, 120), ...repeat(90, 120)],
+        };
+        const model = new DefaultDrivingModel({cycle});
+        const loop = 13 * 240; // long warm; times below are positions in the loop, the step is at 120 s
+        const before = model.value(0x3c, loop + 119, noJitter) ?? 0;
+        const after = model.value(0x3c, loop + 121, noJitter) ?? 0;
+        const settled = model.value(0x3c, loop + 200, noJitter) ?? 0;
+        expect(settled - before).toBeGreaterThan(50);
+        expect(after - before).toBeLessThan((settled - before) / 3); // most of the rise is still to come
+        expect(model.value(0x04, loop + 121, noJitter)).toBe(90); // the load itself steps at once
+    });
+
+    it('moves the intake temperature with the chosen day, like the ambient sensor', () => {
+        const signals = {0x46: {base: 35, perLoadPct: 0, perKrpm: -0.5, perKmh: -0.06, min: -40, max: 80, noise: 0}};
+        const recorded = new DefaultDrivingModel({signals, traits: {intakeTempC: 42, ambientC: 30.4}});
+        const winter = new DefaultDrivingModel({signals, traits: {intakeTempC: 42, ambientC: 5}});
+        expect(recorded.value(0x0f, 0, noJitter)).toBe(42);
+        expect(winter.value(0x0f, 0, noJitter)).toBeCloseTo(42 - 25.4, 5);
+        expect(winter.value(0x68, 0, noJitter)).toBeCloseTo(42 - 25.4, 5);
+        expect(new DefaultDrivingModel({traits: {intakeTempC: 42, ambientC: 5}}).value(0x0f, 0, noJitter)).toBe(42); // no fit: nothing to shift from
     });
 
     it('gates the gear ratio on motion and reports the configured fuel type', () => {

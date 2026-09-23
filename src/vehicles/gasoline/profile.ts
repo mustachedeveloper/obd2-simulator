@@ -20,7 +20,7 @@ export const PROFILE: VehicleProfile = {
     readinessSinceClear: [0x07, 0xf1, 0x00],
     readinessThisDriveCycle: [0x07, 0xb1, 0xb1],
     performanceCounters: [
-        886, 3368, 974, 886, 0, 0, 964, 886, 0, 0, 1695, 886, 0, 0, 0, 0, 843, 886, 0, 0, 0, 0, 0, 0, 1270, 886, 0, 0,
+        887, 3370, 975, 887, 0, 0, 965, 887, 0, 0, 1696, 887, 0, 0, 0, 0, 844, 887, 0, 0, 0, 0, 0, 0, 1271, 887, 0, 0,
     ],
     monitorTests: [
         {mid: 0x01, tid: 0x8b, uasId: 0x85, value: 0xfff3, min: 0xf5bf, max: 0x7fff},
@@ -81,8 +81,8 @@ export const PROFILE: VehicleProfile = {
 };
 
 export const PROVENANCE: SimulatorProvenance = {
-    sessions: 103,
+    sessions: 106,
     from: '2026-08-20',
-    to: '2026-09-22',
+    to: '2026-09-23',
     importerVersion: '1',
 };

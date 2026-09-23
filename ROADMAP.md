@@ -92,14 +92,17 @@ fits from the raw exchanges (16 fits; EGT 516 °C median against a real 569,
 catalyst 577 against 632, exhaust pressure and ambient within a few units).
 What is left from it:
 
-- **Thermal lag.** EGT and catalyst temperature are linear in rpm and speed
-  now; the real sensors lag the drive by tens of seconds, which a first-order
-  filter on the fitted value would capture. Same for coolant and oil, which
-  the model holds flat at the target once warm (real 82–99 / 68–105 °C).
+- **Thermal lag** — done 2026-09-23: catalyst/EGT/DPF PIDs see the state
+  averaged over the last 45 s (the window is a guess: no recording polls
+  them continuously); the warm coolant follows the 5-minute mean speed
+  (map-controlled thermostat, −4 … +7 °C around the target). Left: the
+  cold-start curve is a single exponential (real warm-up is faster at
+  speed), oil is flat at its target.
 - **Ambient temperature** — done 2026-09-23: `traits.ambientC` moves the
   fitted sensor to another day, heat soak kept; the importer writes the
-  recorded day (30.4 °C). Intake temperature stays its own trait
-  (`intakeTempC`) and does not follow.
+  recorded day (30.4 °C); the intake temperature follows the shift too
+  (the recordings show it tracking the day). `intakeTempC` itself is still
+  the corpus median (41 °C), i.e. the recorded days' mix.
 - **Static state** — done 2026-09-23: odometer, fuel level and the in-use
   counters (`30`, `31`) come from the latest recording as traits (were
   synthetic constants). PID `34`'s pump current follows λ.

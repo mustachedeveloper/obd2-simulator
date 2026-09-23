@@ -25,14 +25,17 @@ const catTemp = (value: number): number[] => word(Math.round(clamp((value + 40) 
 const lambda = (value: number): number[] => [...word(Math.round(clamp(value, 0, 2) * 32768)), 0x80, 0x00];
 // Wide-band lambda with pump current (PIDs 0x34+): ratio in AB, current in
 // CD as (mA + 128) × 256 — 0x8000 is 0 mA, where a sensor at λ = 1 sits.
-// The current follows λ (recorded: ≈ 1.1 mA per unit of λ − 1, saturating
-// at 1.3 mA while the injectors are shut and the sensor reads full lean).
-const PUMP_MA_PER_LAMBDA = 1.1;
+// The current follows λ (recorded: ≈ 1.1 mA per unit of λ − 1 when lean,
+// ≈ 2 mA when rich, saturating at 1.3 mA while the injectors are shut and
+// the sensor reads full lean).
+const PUMP_MA_PER_LAMBDA_LEAN = 1.1;
+const PUMP_MA_PER_LAMBDA_RICH = 2;
 const FUEL_CUT_LAMBDA = 1.9;
 const FUEL_CUT_PUMP_MA = 1.3;
 const lambdaCurrent = (value: number): number[] => {
     const ratio = clamp(value, 0, 1.99997);
-    const milliamps = ratio >= FUEL_CUT_LAMBDA ? FUEL_CUT_PUMP_MA : PUMP_MA_PER_LAMBDA * (ratio - 1);
+    const slope = ratio < 1 ? PUMP_MA_PER_LAMBDA_RICH : PUMP_MA_PER_LAMBDA_LEAN;
+    const milliamps = ratio >= FUEL_CUT_LAMBDA ? FUEL_CUT_PUMP_MA : slope * (ratio - 1);
     return [...word(Math.round(ratio * 32768)), ...word(Math.round((milliamps + 128) * 256))];
 };
 const egtWord = (value: number): number[] => word(Math.round(clamp((value + 40) * 10, 0, 65535)));

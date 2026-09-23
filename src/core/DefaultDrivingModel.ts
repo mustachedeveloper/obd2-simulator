@@ -26,6 +26,36 @@ const GASOLINE_DENSITY_KG_PER_L = 0.745;
 // PID 0x9E reports exhaust in kg/h: the air (g/s × 3.6) plus the fuel at stoichiometry.
 const EXHAUST_KG_PER_H_PER_AIR_GPS = 3.6 * (1 + 1 / 14.7);
 const noJitter = (): number => 0;
+// The map-controlled thermostat of the recorded car: once warm, the coolant
+// sits ≈ 4 °C under the target while standing and up to 7 °C above it on the
+// move, following the speed of the last five minutes (correlation 0.72 with
+// the 300 s mean, 0.53 with the instant). Oil does not swing.
+const COOLANT_SWING_WINDOW_S = 300;
+const COOLANT_SWING_STEP_S = 15;
+const COOLANT_SWING_C: readonly (readonly [number, number])[] = [
+    [0, -4],
+    [20, 2.5],
+    [60, 3.5],
+    [90, 7],
+];
+// Exhaust-side sensors lag the drive by tens of seconds: catalyst, EGT and
+// DPF temperatures follow the state averaged over the last 45 s.
+const THERMAL_PIDS: ReadonlySet<number> = new Set([0x3c, 0x3e, 0x78, 0x79, 0x7c]);
+const THERMAL_WINDOW_S = 45;
+const THERMAL_STEP_S = 5;
+
+function interpolate(points: readonly (readonly [number, number])[], x: number): number {
+    const [first, last] = [points[0], points[points.length - 1]];
+    if (!first || !last) return 0;
+    if (x <= first[0]) return first[1];
+    if (x >= last[0]) return last[1];
+    for (let i = 1; i < points.length; i++) {
+        const [x0, y0] = points[i - 1] ?? first;
+        const [x1, y1] = points[i] ?? last;
+        if (x <= x1) return y0 + ((y1 - y0) * (x - x0)) / (x1 - x0);
+    }
+    return last[1];
+}
 
 // Wide-band sensors and the commanded ratio read full lean while the
 // injectors are shut (fuel cut on overrun): the top of the 0..2 scale.
@@ -124,7 +154,8 @@ export class DefaultDrivingModel implements DrivingModel {
     private readonly traits: VehicleTraits;
     private readonly player: DriveCyclePlayer | null;
     private readonly signals: ReadonlyMap<number, SignalFit>;
-    // How far the chosen day (traits.ambientC, when given) is from the one the ambient sensor was fitted on.
+    // How far the chosen day (traits.ambientC, when given) is from the one the ambient sensor was fitted on;
+    // the ambient and intake temperatures move by it.
     private readonly ambientShiftC: number;
 
     /**
@@ -145,9 +176,12 @@ export class DefaultDrivingModel implements DrivingModel {
     }
 
     value(pid: number, elapsedSeconds: number, jitter: (amplitude: number) => number): number | null {
-        const state = this.drivingState(elapsedSeconds, jitter);
+        const state = THERMAL_PIDS.has(pid)
+            ? this.laggedState(elapsedSeconds, THERMAL_WINDOW_S, THERMAL_STEP_S)
+            : this.drivingState(elapsedSeconds, jitter);
         const {coolantStartC, coolantTargetC, coolantWarmupTauS, oilOverCoolantC} = this.traits;
         const warmup = 1 - Math.exp(-elapsedSeconds / coolantWarmupTauS);
+        const coolantC = coolantStartC + (coolantTargetC - coolantStartC) * warmup + this.coolantSwingC(elapsedSeconds) * warmup;
         const engineOff = state.rpm === 0 ? ENGINE_OFF_VALUES[pid] : undefined;
         if (engineOff !== undefined) return engineOff;
         if (LAMBDA_PIDS.has(pid) && this.fuelCut(state)) return FUEL_CUT_LAMBDA;
@@ -259,9 +293,9 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x66:
                 return this.airflowGps(state, jitter); // MAF sensors
             case 0x67:
-                return coolantStartC + (coolantTargetC - coolantStartC) * warmup + jitter(0.5);
+                return coolantC + jitter(0.5);
             case 0x68:
-                return this.traits.intakeTempC + jitter(1.5); // IAT sensors
+                return this.traits.intakeTempC + this.ambientShiftC + jitter(1.5); // IAT sensors
             case 0x69:
                 return clamp(30 - state.engineLoadPct * 0.2, 0, 100); // EGR packet (commanded)
             case 0x6f:
@@ -312,7 +346,7 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x04:
                 return state.engineLoadPct;
             case 0x05:
-                return coolantStartC + (coolantTargetC - coolantStartC) * warmup + jitter(0.5);
+                return coolantC + jitter(0.5);
             case 0x06:
                 return jitter(4);
             case 0x0b:
@@ -325,7 +359,7 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x0e:
                 return clamp(8 + state.rpm / 400 + jitter(1), -10, 40);
             case 0x0f:
-                return this.traits.intakeTempC + jitter(1.5);
+                return this.traits.intakeTempC + this.ambientShiftC + jitter(1.5);
             case 0x10:
                 return this.airflowGps(state, jitter);
             case 0x11:
@@ -367,6 +401,28 @@ export class DefaultDrivingModel implements DrivingModel {
     // Airflow scales with rpm × load; ~2 g/s idle, ~40+ under load.
     private airflowGps(state: DrivingState, jitter: (amplitude: number) => number): number {
         return clamp(2 + (state.rpm / 1000) * (state.engineLoadPct / 8) + jitter(0.5), 0, 300);
+    }
+
+    // The driving state averaged over the last `windowS` seconds, sampled every
+    // `stepS` (jitter-free): what a slow sensor sees.
+    private laggedState(elapsedSeconds: number, windowS: number, stepS: number): DrivingState {
+        const moments = [];
+        for (let back = 0; back <= windowS; back += stepS) moments.push(Math.max(0, elapsedSeconds - back));
+        const states = moments.map((moment) => this.drivingState(moment, noJitter));
+        const mean = (pick: (state: DrivingState) => number) => states.reduce((sum, s) => sum + pick(s), 0) / states.length;
+        return {
+            speedKmh: mean((s) => s.speedKmh),
+            rpm: mean((s) => s.rpm),
+            throttlePct: mean((s) => s.throttlePct),
+            engineLoadPct: mean((s) => s.engineLoadPct),
+        };
+    }
+
+    private coolantSwingC(elapsedSeconds: number): number {
+        return interpolate(
+            COOLANT_SWING_C,
+            this.laggedState(elapsedSeconds, COOLANT_SWING_WINDOW_S, COOLANT_SWING_STEP_S).speedKmh,
+        );
     }
 
     private fuelRateLph(state: DrivingState, elapsedSeconds: number): number {

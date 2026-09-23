@@ -31,10 +31,11 @@ function fingerprint(model: DefaultDrivingModel): string {
 
 describe('DefaultDrivingModel defaults', () => {
     it('are untouched by the traits / drive-cycle options', () => {
-        expect(fingerprint(new DefaultDrivingModel())).toBe('ba523393');
-        expect(fingerprint(new DefaultDrivingModel({fuelType: 4}))).toBe('bf0b99be');
-        expect(fingerprint(new DefaultDrivingModel({engineOffAtStandstill: true}))).toBe('f2666c53');
-        expect(fingerprint(new DefaultDrivingModel({traits: {}}))).toBe('ba523393');
+        // Re-pinned 2026-09-23 when the warm coolant got its thermostat swing (PIDs 05 / 67).
+        expect(fingerprint(new DefaultDrivingModel())).toBe('a18d7a9d');
+        expect(fingerprint(new DefaultDrivingModel({fuelType: 4}))).toBe('58db2c6');
+        expect(fingerprint(new DefaultDrivingModel({engineOffAtStandstill: true}))).toBe('4b4f9a7f');
+        expect(fingerprint(new DefaultDrivingModel({traits: {}}))).toBe('a18d7a9d');
     });
 });
 
@@ -53,8 +54,9 @@ describe('vehicle traits', () => {
 
     it('replace the matching defaults', () => {
         expect(at(0x0c, 5)).toBe(930); // idling
-        expect(at(0x05, 100_000)).toBeCloseTo(93, 3); // fully warm
-        expect(at(0x67, 100_000)).toBeCloseTo(93, 3);
+        // Fully warm; the thermostat runs +4.1 °C over the target for the synthetic cycle's 5-minute mean speed (≈ 63 km/h).
+        expect(at(0x05, 100_000)).toBeCloseTo(97.125, 3);
+        expect(at(0x67, 100_000)).toBeCloseTo(97.125, 3);
         expect(at(0x5c, 100_000)).toBeCloseTo(95, 3); // oil settles 2 °C above coolant on this car (default 8)
         expect(at(0x42, 5)).toBe(13.9);
         expect(at(0x07, 5)).toBe(-5.5);
@@ -127,7 +129,7 @@ describe('fitted signals', () => {
     });
 
     it('leave the defaults untouched when absent or empty', () => {
-        expect(fingerprint(new DefaultDrivingModel({signals: {}}))).toBe('ba523393');
+        expect(fingerprint(new DefaultDrivingModel({signals: {}}))).toBe('a18d7a9d');
     });
 });
 

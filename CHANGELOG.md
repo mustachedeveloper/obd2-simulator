@@ -50,8 +50,19 @@ in minor versions when a recording proves real hardware behaves differently
     `6D` (fuel pressure control), `9D` (engine fuel rate) and `9E` (exhaust
     flow) generic ones, so the default car advertises exactly the car's
     support masks (55 PIDs; no recording ever polled the last four).
-  - PID `34`'s pump current follows λ (≈ 1.1 mA per unit of λ − 1, 1.3 mA
-    at fuel cut, as recorded: `4134FFFF814D`); it was a constant 0 mA.
+  - PID `34`'s pump current follows λ (≈ 1.1 mA per unit of λ − 1 when
+    lean, 2 mA when rich, 1.3 mA at fuel cut, as recorded: `4134FFFF814D`);
+    it was a constant 0 mA.
+  - The warm coolant (PIDs `05`, `67`) swings with the drive like the
+    recorded car's map-controlled thermostat: ≈ 4 °C under the target after
+    five minutes standing, up to 7 °C over it on the move, following the mean
+    speed of the last five minutes (correlation 0.72 in 116 sessions; load
+    explains nothing). Oil keeps its flat target. Catalyst, EGT and DPF
+    temperatures (`3C 3E 78 79 7C`) follow the driving state averaged over
+    the last 45 s instead of the instant.
+  - `traits.ambientC` moves the intake temperature (`0F`, `68`) along with
+    the ambient sensor; the recordings show intake air tracking the day
+    (48–53 °C one day, 25–38 °C the next, same car).
   - λ PIDs (`24`, `34`, `44`) read full lean (≈ 2) during fuel cut: the
     recorded drive rolls with zero engine load. (Load, not fuel rate — in
     the recordings zero load marks 90 % of the lean readings with 1.5 %
@@ -137,7 +148,7 @@ in minor versions when a recording proves real hardware behaves differently
   `distanceSinceClearKm` — plus `ambientC`, the day: a recorded vehicle's
   fitted ambient sensor is shifted to it, heat soak kept; the importer
   writes all five from the latest recording, so the default car starts at
-  51 160 km with 86 % fuel, 83 warm-ups and 2 874 km since the last clear
+  51 221 km with 79 % fuel, 84 warm-ups and 2 904 km since the last clear
   on a 30 °C day) and `cycle` (`DriveCycle`: a recorded drive replayed in a
   loop) and `signals` (`SignalFits`: per-PID fits against load, rpm and
   speed, which replace the generic formulas — the default car's manifold
