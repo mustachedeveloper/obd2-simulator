@@ -1,6 +1,6 @@
 import {type DriveCycle, type DriveCyclePlayer, type DrivingState, createDriveCyclePlayer} from './drive-cycle';
 import {type SignalFit, type SignalFits, evaluateSignal, resolveSignals} from './signals';
-import {type VehicleTraits, resolveTraits} from './traits';
+import {AMBIENT_REFERENCE_STATE, type VehicleTraits, resolveTraits} from './traits';
 import type {DrivingModel} from './types';
 
 // The default driving cycle: 20s idle → 8s acceleration → cruise at
@@ -19,8 +19,13 @@ const CYCLE_LENGTH_S = 96;
 
 const CRUISE_SPEED_KMH = 90;
 const OIL_WARMUP_LAG = 1.6;
-const FUEL_START_PCT = 62;
 const FUEL_BURN_PCT_PER_HOUR = 6;
+// PID 0x9D reports fuel in g/s: L/h × density (kg/L) / 3.6. Diesel is denser.
+const FUEL_DENSITY_KG_PER_L: Readonly<Record<number, number>> = {4: 0.832};
+const GASOLINE_DENSITY_KG_PER_L = 0.745;
+// PID 0x9E reports exhaust in kg/h: the air (g/s × 3.6) plus the fuel at stoichiometry.
+const EXHAUST_KG_PER_H_PER_AIR_GPS = 3.6 * (1 + 1 / 14.7);
+const noJitter = (): number => 0;
 
 // Wide-band sensors and the commanded ratio read full lean while the
 // injectors are shut (fuel cut on overrun): the top of the 0..2 scale.
@@ -47,7 +52,8 @@ export interface DefaultDrivingModelOptions {
      */
     fuelType?: number;
     /**
-     * Odometer reading at power-on (PID 0xA6 accumulates on top).
+     * Odometer reading at power-on (PID 0xA6 accumulates on top). Overrides
+     * `traits.odometerKm`.
      */
     odometerKm?: number;
     /**
@@ -82,6 +88,8 @@ const ENGINE_OFF_VALUES: Readonly<Record<number, number>> = {
     0x42: 12.4, // module voltage: battery, no alternator
     0x5e: 0, // fuel rate
     0x66: 0, // MAF sensors
+    0x9d: 0, // engine fuel rate
+    0x9e: 0, // exhaust flow
 };
 
 // Distance driven since power-on: piecewise integral of the speed profile.
@@ -116,17 +124,24 @@ export class DefaultDrivingModel implements DrivingModel {
     private readonly traits: VehicleTraits;
     private readonly player: DriveCyclePlayer | null;
     private readonly signals: ReadonlyMap<number, SignalFit>;
+    // How far the chosen day (traits.ambientC, when given) is from the one the ambient sensor was fitted on.
+    private readonly ambientShiftC: number;
 
     /**
      * @throws if a trait is out of range, the drive cycle or a signal fit is malformed.
      */
     constructor(options: DefaultDrivingModelOptions = {}) {
         this.fuelType = options.fuelType ?? 1;
-        this.odometerKm = options.odometerKm ?? 84_213;
-        this.engineOffAtStandstill = options.engineOffAtStandstill ?? false;
         this.traits = resolveTraits(options.traits);
+        this.odometerKm = options.odometerKm ?? this.traits.odometerKm;
+        this.engineOffAtStandstill = options.engineOffAtStandstill ?? false;
         this.player = options.cycle ? createDriveCyclePlayer(options.cycle) : null;
         this.signals = resolveSignals(options.signals);
+        const ambient = this.signals.get(0x46);
+        this.ambientShiftC =
+            ambient && options.traits?.ambientC !== undefined
+                ? this.traits.ambientC - evaluateSignal(ambient, AMBIENT_REFERENCE_STATE, noJitter)
+                : 0;
     }
 
     value(pid: number, elapsedSeconds: number, jitter: (amplitude: number) => number): number | null {
@@ -137,7 +152,10 @@ export class DefaultDrivingModel implements DrivingModel {
         if (engineOff !== undefined) return engineOff;
         if (LAMBDA_PIDS.has(pid) && this.fuelCut(state)) return FUEL_CUT_LAMBDA;
         const fit = this.signals.get(pid);
-        if (fit) return evaluateSignal(fit, state, jitter);
+        if (fit) {
+            const fitted = evaluateSignal(fit, state, jitter);
+            return pid === 0x46 ? fitted + this.ambientShiftC : fitted;
+        }
         switch (pid) {
             case 0x03:
                 // Open loop while warming up, closed loop after.
@@ -168,7 +186,8 @@ export class DefaultDrivingModel implements DrivingModel {
                 return 400 + state.engineLoadPct * 2 + jitter(15); // rail gauge
             case 0x23:
             case 0x59:
-                return 5000 + state.engineLoadPct * 80 + jitter(100); // rail direct/abs
+            case 0x6d:
+                return 5000 + state.engineLoadPct * 80 + jitter(100); // rail direct/abs, fuel pressure control
             case 0x24:
                 return clamp(1 + jitter(0.05), 0, 2); // O2 S1 lambda
             case 0x25:
@@ -182,9 +201,9 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x2e:
                 return clamp(5 + state.engineLoadPct * 0.2 + jitter(2), 0, 100); // purge
             case 0x30:
-                return 42; // warm-ups since clear
+                return this.traits.warmupsSinceClear;
             case 0x31:
-                return 1200 + this.distanceKm(elapsedSeconds); // distance since clear
+                return this.traits.distanceSinceClearKm + this.distanceKm(elapsedSeconds);
             case 0x32:
                 return -100 + jitter(50); // evap vapor pressure (Pa)
             case 0x3c:
@@ -228,18 +247,17 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x5d:
                 return 2 + state.engineLoadPct * 0.1 + jitter(0.5); // injection timing
             case 0x5e:
-                return (
-                    this.player?.fuelRateAt(elapsedSeconds) ??
-                    clamp(0.5 + state.engineLoadPct * 0.12 + state.speedKmh * 0.04, 0, 60)
-                ); // fuel rate
+                return this.fuelRateLph(state, elapsedSeconds);
             case 0x61:
                 return clamp(state.engineLoadPct + 5, -125, 130); // demanded torque
             case 0x63:
                 return 250; // reference torque (Nm)
             case 0x64:
                 return 18; // torque at idle (%)
+            case 0x65:
+                return state.speedKmh > 0 ? 1 : 0; // aux I/O: automatic transmission in drive
             case 0x66:
-                return clamp(2 + (state.rpm / 1000) * (state.engineLoadPct / 8) + jitter(0.5), 0, 300); // MAF sensors
+                return this.airflowGps(state, jitter); // MAF sensors
             case 0x67:
                 return coolantStartC + (coolantTargetC - coolantStartC) * warmup + jitter(0.5);
             case 0x68:
@@ -273,6 +291,14 @@ export class DefaultDrivingModel implements DrivingModel {
                 return -12 + jitter(1); // friction torque
             case 0x9b:
                 return clamp(78 - (elapsedSeconds / 3600) * 0.05, 0, 100); // DEF level
+            case 0x9d:
+                return (
+                    (this.fuelRateLph(state, elapsedSeconds) *
+                        (FUEL_DENSITY_KG_PER_L[this.fuelType] ?? GASOLINE_DENSITY_KG_PER_L)) /
+                    3.6
+                ); // engine fuel rate (g/s)
+            case 0x9e:
+                return this.airflowGps(state, jitter) * EXHAUST_KG_PER_H_PER_AIR_GPS; // exhaust flow (kg/h)
             case 0xa4: {
                 /**
                  * Gear ratio from the same rpm-per-speed table; no data at
@@ -301,21 +327,20 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x0f:
                 return this.traits.intakeTempC + jitter(1.5);
             case 0x10:
-                // Airflow scales with rpm × load; ~2 g/s idle, ~40+ under load.
-                return clamp(2 + (state.rpm / 1000) * (state.engineLoadPct / 8) + jitter(0.5), 0, 300);
+                return this.airflowGps(state, jitter);
             case 0x11:
                 return state.throttlePct;
             case 0x14:
                 // Narrow-band O2 oscillating around stoich.
                 return clamp(0.45 + jitter(0.25), 0.05, 0.9);
             case 0x2f:
-                return clamp(FUEL_START_PCT - (elapsedSeconds / 3600) * FUEL_BURN_PCT_PER_HOUR, 0, 100);
+                return clamp(this.traits.fuelLevelPct - (elapsedSeconds / 3600) * FUEL_BURN_PCT_PER_HOUR, 0, 100);
             case 0x33:
                 return 101 + jitter(0.3);
             case 0x42:
                 return state.rpm > 400 ? this.traits.chargingVoltage + jitter(0.1) : 12.4 + jitter(0.1);
             case 0x46:
-                return 22 + jitter(1);
+                return this.traits.ambientC + jitter(1);
             case 0x51:
                 return this.fuelType;
             case 0x5c: {
@@ -337,6 +362,15 @@ export class DefaultDrivingModel implements DrivingModel {
     // and marks only 60 %. Only a recorded cycle can show it.
     private fuelCut(state: DrivingState): boolean {
         return this.player !== null && state.engineLoadPct < FUEL_CUT_MAX_LOAD_PCT && state.rpm > 0 && state.speedKmh > 0;
+    }
+
+    // Airflow scales with rpm × load; ~2 g/s idle, ~40+ under load.
+    private airflowGps(state: DrivingState, jitter: (amplitude: number) => number): number {
+        return clamp(2 + (state.rpm / 1000) * (state.engineLoadPct / 8) + jitter(0.5), 0, 300);
+    }
+
+    private fuelRateLph(state: DrivingState, elapsedSeconds: number): number {
+        return this.player?.fuelRateAt(elapsedSeconds) ?? clamp(0.5 + state.engineLoadPct * 0.12 + state.speedKmh * 0.04, 0, 60);
     }
 
     private distanceKm(elapsedSeconds: number): number {

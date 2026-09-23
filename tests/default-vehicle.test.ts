@@ -6,6 +6,7 @@ import {
     REFERENCE_PROFILE,
     SimulatorEngine,
     VLINKER_ADAPTER,
+    VLINKER_FD_ADAPTER,
     createSimulator,
     gasolineDrivingModel,
 } from '../src/index';
@@ -50,16 +51,39 @@ describe('default gasoline vehicle — identity', () => {
         expect(lines(engine.handleCommand(command))).toEqual(expected);
     });
 
-    it('advertises only what the simulator can encode — the real masks minus 4 PIDs', () => {
-        // These blocks differ from the car exactly by the PIDs without an encoder.
+    it('advertises every PID the car advertises, and can encode all of them', () => {
         const engine = recordedCar();
         const mask = (command: string) => Number.parseInt(lines(engine.handleCommand(command))[0]?.slice(4) ?? '', 16);
-        const dropped = (base: number, pids: readonly number[]) =>
-            pids.reduce((bits, pid) => bits + 2 ** (0x20 - (pid - base)), 0);
-        expect(mask('0160 1')).toBe(0x6b09a141 - dropped(0x60, [0x65, 0x6d]));
-        expect(mask('0180 1')).toBe(0x0024000d - dropped(0x80, [0x9d, 0x9e]));
         expect(mask('0120 1')).toBe(0x8007b011);
+        expect(mask('0160 1')).toBe(0x6b09a141);
+        expect(mask('0180 1')).toBe(0x0024000d);
         for (const pid of GASOLINE_PROFILE.pids) expect(PID_ENCODERS[pid], `PID ${pid.toString(16)}`).toBeDefined();
+    });
+
+    it('starts where the last recording left the car: odometer, fuel, in-use counters, the day', () => {
+        const engine = recordedCar();
+        expect(TRAITS.odometerKm).toBeGreaterThan(50_000);
+        expect(TRAITS.fuelLevelPct).toBeGreaterThan(0);
+        expect(TRAITS.warmupsSinceClear).toBeGreaterThan(0);
+        expect(TRAITS.distanceSinceClearKm).toBeGreaterThan(0);
+        expect(TRAITS.ambientC).toBeGreaterThan(0);
+        const word = (command: string) => Number.parseInt(lines(engine.handleCommand(command))[0]?.slice(4) ?? '', 16);
+        expect(word('0130 1')).toBe(TRAITS.warmupsSinceClear);
+        expect(word('0131 1')).toBe(Math.round(TRAITS.distanceSinceClearKm ?? 0));
+        expect(word('01A6 1') / 10).toBeCloseTo(TRAITS.odometerKm ?? 0, 0);
+    });
+
+    it('vLinker: an unhinted batch returns after ≈ 86 ms with ATST19, a hinted one after ≈ 30 (adaptive timing)', () => {
+        // Recorded on the vLinker FD: 133 000 unhinted batches, median 86 ms (p10 71, p90 97); hinted 31 ms.
+        const engine = createSimulator('default-gasoline', {now: () => 60_000, seed: 7, adapter: VLINKER_FD_ADAPTER});
+        for (const command of ['ATE0', 'ATL0', 'ATS0', 'ATST19', 'ATSP7']) engine.handleCommand(command);
+        const batch = engine.execute('010C5E0D').latency;
+        expect(batch.waitMs).toBe(55);
+        expect(batch.totalMs).toBeGreaterThan(75);
+        expect(batch.totalMs).toBeLessThan(95);
+        expect(engine.execute('010C5E 1').latency.waitMs).toBe(0);
+        engine.handleCommand('ATAT0');
+        expect(engine.execute('010C5E0D').latency.waitMs).toBe(100);
     });
 
     it('pads frames with AA like the car: the last segment on the vLinker, never a single frame', () => {
@@ -158,10 +182,17 @@ describe('default gasoline vehicle — driving', () => {
             chargingVoltage: 13.9,
             longTermFuelTrimPct: -5.5,
             intakeTempC: 42,
+            // Where the latest recording left the car.
+            odometerKm: 51159.7,
+            fuelLevelPct: 86,
+            warmupsSinceClear: 83,
+            distanceSinceClearKm: 2874,
             // From the 22 sessions that began with a cold engine.
             coolantStartC: 46,
             coolantWarmupTauS: 160,
             oilOverCoolantC: 4,
+            // The fitted ambient sensor at the reference cruise state.
+            ambientC: 30.4,
         });
         expect(model.value(0x05, 0, noJitter)).toBe(46);
         expect(model.value(0x5c, 100_000, noJitter)).toBeCloseTo(97, 3);

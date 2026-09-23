@@ -5,7 +5,7 @@ import {decodeMode01, withDecodedSamples} from '../../tools/import-vehicle/decod
 import {buildIdentity, sourceAddresses} from '../../tools/import-vehicle/identity';
 import {ecuPayloads, framePaddingOf} from '../../tools/import-vehicle/responses';
 import {fitSignals} from '../../tools/import-vehicle/signals';
-import {deriveTraits, deriveWarmup} from '../../tools/import-vehicle/traits';
+import {ambientTrait, deriveTraits, deriveWarmup} from '../../tools/import-vehicle/traits';
 import type {Exchange, Sample} from '../../tools/import-vehicle/session';
 
 describe('ecuPayloads', () => {
@@ -140,9 +140,17 @@ describe('buildIdentity', () => {
         expect(profile.pids).not.toContain(0x02); // not in BE3EA813
     });
 
+    it('serves every PID this car advertises', () => {
+        expect(report.unsupportedPids).toEqual([]);
+        for (const pid of [0x65, 0x6d, 0x9d, 0x9e]) expect(profile.pids).toContain(pid);
+    });
+
     it('drops PIDs the simulator cannot encode and reports them', () => {
-        expect(report.unsupportedPids.length).toBeGreaterThan(0);
-        for (const pid of report.unsupportedPids) expect(profile.pids).not.toContain(pid);
+        // The same car advertising PID 86 (NOx sensor), which has no encoder.
+        const nox = exchanges.map((exchange) => (exchange.c === '0180 1' ? x('0180 1', '41800424000D\r\r') : exchange));
+        const built = buildIdentity(nox, {name: 'gasoline', vinSerial: '123456'});
+        expect(built.report.unsupportedPids).toEqual([0x86]);
+        expect(built.profile.pids).not.toContain(0x86);
     });
 
     it('reads protocol, ignition, readiness and the mode 09 identity', () => {
@@ -440,6 +448,39 @@ describe('deriveTraits', () => {
 
     it('leaves out what was never recorded', () => {
         expect(deriveTraits([])).toEqual({});
+    });
+
+    it('takes the latest reading of the in-use counters, the fuel level and the odometer — they drift, a median would lag', () => {
+        const samples: Sample[] = [
+            {t: 1000, p: 'odometer', v: 51_050.3},
+            {t: 9000, p: 'odometer', v: 51_160.4},
+            {t: 5000, p: 'odometer', v: 51_100},
+            {t: 1000, p: 'fuelLevel', v: 85.9},
+            {t: 9000, p: 'fuelLevel', v: 97.25},
+            {t: 1000, p: 'warmupsSinceClear', v: 80},
+            {t: 9000, p: 'warmupsSinceClear', v: 83},
+            {t: 1000, p: 'distanceSinceClear', v: 2765},
+            {t: 9000, p: 'distanceSinceClear', v: 2874},
+        ];
+        expect(deriveTraits(samples)).toEqual({
+            odometerKm: 51_160.4,
+            fuelLevelPct: 97,
+            warmupsSinceClear: 83,
+            distanceSinceClearKm: 2874,
+        });
+    });
+});
+
+describe('ambientTrait', () => {
+    it('reads the recorded day off the ambient fit at the reference cruise state', () => {
+        const fit = {0x46: {base: 35.21, perLoadPct: 0, perKrpm: -0.5154, perKmh: -0.06282, min: 24, max: 45, noise: 0.42}};
+        expect(ambientTrait(fit, [])).toEqual({ambientC: 30.4}); // 35.21 − 1.03 − 3.77
+    });
+
+    it('falls back to the median of the logged ambient temperature, and says nothing without either', () => {
+        const samples: Sample[] = [27, 28, 40].map((v, i) => ({t: i * 1000, p: 'ambientTemp', v}));
+        expect(ambientTrait({}, samples)).toEqual({ambientC: 28});
+        expect(ambientTrait({}, [])).toEqual({});
     });
 });
 

@@ -11,9 +11,14 @@ export const TRAITS: Partial<VehicleTraits> = {
     chargingVoltage: 13.9,
     longTermFuelTrimPct: -5.5,
     intakeTempC: 42,
+    odometerKm: 51159.7,
+    fuelLevelPct: 86,
+    warmupsSinceClear: 83,
+    distanceSinceClearKm: 2874,
     coolantStartC: 46,
     coolantWarmupTauS: 160,
     oilOverCoolantC: 4,
+    ambientC: 30.4,
 };
 
 // How each PID followed load, rpm and speed in the recordings (least squares; constants where unrelated).

@@ -45,20 +45,20 @@ The registry (`src/simulators`) and `npm run import-vehicle` exist so that
 every new set of recordings becomes a selectable simulator with a ~15-line
 definition (`docs/ADDING-A-VEHICLE.md`). Known gaps the recordings exposed:
 
-- **Encoders for PIDs `65 6D 9D 9E`** — advertised by the recorded car, left
-  out of its profile: no recording ever polled them, so there are no bytes
-  to check an encoder against (`34 70 71 8B` were added from recorded bytes).
+- **PIDs `65 6D 9D 9E` run on generic encoders** (added 2026-09-23 so the
+  support masks match the car): no recording has ever polled them, so
+  there are no bytes to check the byte layouts against.
 - **A full-sweep recording.** 16 signals are fitted from the raw
   exchanges; purge (`2E`, 16 polls), O2 sensor 2 (`15`, R² 0.19), timing
   advance, pedal position and the DPF/boost PIDs still run on generic
   formulas until a drive is recorded with every supported PID polled
   continuously next to load.
-- **Adaptive timing (`ATAT1`).** On the vLinker an unhinted request returns
-  after ≈ 86 ms with `ATST19` (base 31 ms + ≈ 55 % of the 100 ms window);
-  the simulator waits the whole window (132 ms) by design
-  (`ADAPTIVE_TIMING_FACTORS[1] = 1`). A per-persona factor would fit the
-  measurement without changing the other presets. The clone presets are
-  also faster than the hardware (AT commands 20 ms vs 45–70 ms measured).
+- **Adaptive timing (`ATAT1`)** — done 2026-09-23: `adaptiveTimingFactor`
+  0.55 on the vLinker presets (86 ms median over 133 000 unhinted batches
+  with `ATST19`). Still off: `0100`, where the car's third module answers
+  late and the hardware sits through the whole window (148 ms; the
+  simulator answers after ≈ 85), and the clone presets' AT commands
+  (20 ms vs 45–70 ms measured).
 - **Clone truncation as a persona trait.** The v2.1 clone cuts multi-frame
   responses off after five frames (`0908` → `01B` instead of `03B`, mode 06
   records lose their tail); today that is a documented deviation in
@@ -96,10 +96,16 @@ What is left from it:
   now; the real sensors lag the drive by tens of seconds, which a first-order
   filter on the fitted value would capture. Same for coolant and oil, which
   the model holds flat at the target once warm (real 82–99 / 68–105 °C).
-- **Ambient temperature** is a property of the day, not of the drive; the
-  fit (35 °C at idle, falling with rpm) reproduces the sensor's heat soak
-  when standing, which is real, but a `traits.ambientC` would let a test
-  pick the day.
+- **Ambient temperature** — done 2026-09-23: `traits.ambientC` moves the
+  fitted sensor to another day, heat soak kept; the importer writes the
+  recorded day (30.4 °C). Intake temperature stays its own trait
+  (`intakeTempC`) and does not follow.
+- **Static state** — done 2026-09-23: odometer, fuel level and the in-use
+  counters (`30`, `31`) come from the latest recording as traits (were
+  synthetic constants). PID `34`'s pump current follows λ.
+- **The after-run phase length** (`afterRunMs`) is the app's 15-failure
+  cutoff (~10 s), not the car's: no recording keeps polling long enough to
+  see the ECU go silent on its own.
 - **The clone's segment numbering** (`3:13490401…`, the second ECU's first
   frame numbered on from the first ECU's) is documented on
   `CLONE_OBDII_ADAPTER`, not modelled.

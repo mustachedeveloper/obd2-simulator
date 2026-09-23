@@ -46,8 +46,12 @@ in minor versions when a recording proves real hardware behaves differently
     vehicle, as real ECUs do (was `45 43 4D 2D …`).
   - PIDs `34` (wide-band λ + pump current), `70` (boost pressure control),
     `71` (wastegate / VGT control) and `8B` (aftertreatment status) have
-    encoders, checked against recorded bytes; the default car serves them
-    (51 PIDs).
+    encoders, checked against recorded bytes, and `65` (auxiliary I/O),
+    `6D` (fuel pressure control), `9D` (engine fuel rate) and `9E` (exhaust
+    flow) generic ones, so the default car advertises exactly the car's
+    support masks (55 PIDs; no recording ever polled the last four).
+  - PID `34`'s pump current follows λ (≈ 1.1 mA per unit of λ − 1, 1.3 mA
+    at fuel cut, as recorded: `4134FFFF814D`); it was a constant 0 mA.
   - λ PIDs (`24`, `34`, `44`) read full lean (≈ 2) during fuel cut: the
     recorded drive rolls with zero engine load. (Load, not fuel rate — in
     the recordings zero load marks 90 % of the lean readings with 1.5 %
@@ -95,14 +99,21 @@ in minor versions when a recording proves real hardware behaves differently
 ### Added
 
 - `engine.setIgnition('off', {afterRunMs})` — the engine ECU's after-run
-  phase, seen at the end of 59 recorded drives: for 10–15 s it rejects every
-  request with `7F xx 22` while the other ECUs are already silent, then `NO
-  DATA` (and `UNABLE TO CONNECT` for a searching adapter). Control channel:
+  phase, seen at the end of 62 recorded drives: it rejects every request
+  with `7F xx 22` while the other ECUs are already silent (for at least
+  10 s — every recording ends with the app giving up after 15 failed polls,
+  so the real length is unknown), then `NO DATA` (and `UNABLE TO CONNECT`
+  for a searching adapter). Control channel:
   `ignition off 12`. Without the option `'off'` is instant, as before.
 - `AdapterPersona` fields measured from the recordings: `hintCountsFrames`,
   `protocolSearchFailMs` (a search nobody answers takes longer),
   `atLatencyMs`, `resetLatencyMs`, `voltageOffsetV`, `canStatus`,
-  `padsSingleFrames`, `trimsRawSingleFrames`, `batch.overflow: 'silent'`
+  `padsSingleFrames`, `trimsRawSingleFrames`, `adaptiveTimingFactor` (the
+  share of the ATST window an adapter with `ATAT1` still waits for an
+  unhinted request: the vLinker presets set 0.55 — an unhinted two-ECU
+  batch returns after 86 ms median with `ATST19` in 133 000 recorded
+  exchanges; the default of 1, the whole window, is unchanged for the
+  other presets), `batch.overflow: 'silent'`
   (a request beyond `maxPids` prints nothing — `CommandResult.silent`, the
   links stay quiet and the app runs into its timeout). Presets
   `VLINKER_FD_ADAPTER` (`vlinker-fd`) and `CLONE_OBDII_ADAPTER`
@@ -121,7 +132,13 @@ in minor versions when a recording proves real hardware behaves differently
   `--profile` keeps working.
 - `DefaultDrivingModel` options `traits` (`VehicleTraits`: idle speed,
   operating temperature, warm-up time, charging voltage, fuel trim, intake
-  temperature, oil-over-coolant offset) and `cycle` (`DriveCycle`: a recorded drive replayed in a
+  temperature, oil-over-coolant offset, and where the car stands at
+  power-on — `odometerKm`, `fuelLevelPct`, `warmupsSinceClear`,
+  `distanceSinceClearKm` — plus `ambientC`, the day: a recorded vehicle's
+  fitted ambient sensor is shifted to it, heat soak kept; the importer
+  writes all five from the latest recording, so the default car starts at
+  51 160 km with 86 % fuel, 83 warm-ups and 2 874 km since the last clear
+  on a 30 °C day) and `cycle` (`DriveCycle`: a recorded drive replayed in a
   loop) and `signals` (`SignalFits`: per-PID fits against load, rpm and
   speed, which replace the generic formulas — the default car's manifold
   pressure, absolute load, relative throttle, fuel trims, throttle actuator,

@@ -144,6 +144,7 @@ describe('public API surface', () => {
             | 'hintCountsFrames'
             | 'batch'
             | 'adaptiveTiming'
+            | 'adaptiveTimingFactor'
             | 'ignitionMonitor'
             | 'baseLatencyMs'
             | 'latencyJitterMs'
@@ -184,6 +185,11 @@ describe('public API surface', () => {
             | 'chargingVoltage'
             | 'longTermFuelTrimPct'
             | 'intakeTempC'
+            | 'ambientC'
+            | 'odometerKm'
+            | 'fuelLevelPct'
+            | 'warmupsSinceClear'
+            | 'distanceSinceClearKm'
         >();
         expectTypeOf<keyof SignalFit>().toEqualTypeOf<'base' | 'perLoadPct' | 'perKrpm' | 'perKmh' | 'min' | 'max' | 'noise'>();
         // Ids only ever get added.

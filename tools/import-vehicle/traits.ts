@@ -1,4 +1,5 @@
-import type {VehicleTraits} from '../../src/core/traits';
+import {type SignalFits, evaluateSignal} from '../../src/core/signals';
+import {AMBIENT_REFERENCE_STATE, type VehicleTraits} from '../../src/core/traits';
 import type {Sample} from './session';
 
 // Measured constants of the vehicle: medians over everything it reported,
@@ -18,6 +19,14 @@ function median(values: readonly number[]): number | null {
 
 const valuesOf = (samples: readonly Sample[], channel: string): number[] =>
     samples.filter((sample) => sample.p === channel).map((sample) => sample.v);
+
+// The most recent reading: counters and levels drift, a median would lag.
+function latestOf(samples: readonly Sample[], channel: string): number | null {
+    const last = samples
+        .filter((sample) => sample.p === channel)
+        .reduce<Sample | null>((latest, sample) => (latest === null || sample.t >= latest.t ? sample : latest), null);
+    return last === null ? null : last.v;
+}
 
 // Engine speed while the last reported vehicle speed was zero.
 function idleRpms(samples: readonly Sample[]): number[] {
@@ -94,6 +103,28 @@ export function deriveTraits(samples: readonly Sample[]): Partial<VehicleTraits>
         chargingVoltage: rounded(voltage, 1),
         longTermFuelTrimPct: rounded(median(valuesOf(samples, 'ltft1')), 1),
         intakeTempC: rounded(median(valuesOf(samples, 'intakeTemp')), 0),
+        ambientC: null,
+        odometerKm: rounded(latestOf(samples, 'odometer'), 1),
+        fuelLevelPct: rounded(latestOf(samples, 'fuelLevel'), 0),
+        warmupsSinceClear: rounded(latestOf(samples, 'warmupsSinceClear'), 0),
+        distanceSinceClearKm: rounded(latestOf(samples, 'distanceSinceClear'), 0),
     };
     return Object.fromEntries(Object.entries(measured).filter(([, value]) => value !== null)) as Partial<VehicleTraits>;
+}
+
+const noJitter = (): number => 0;
+
+/**
+ * The day the vehicle was recorded on: what its fitted ambient sensor reads
+ * at the reference cruise state, so the fit replays unchanged by default and
+ * `traits.ambientC` can move the drive to another day. Without a fit, the
+ * median of the logged ambient temperature.
+ */
+export function ambientTrait(signals: SignalFits, samples: readonly Sample[]): Partial<VehicleTraits> {
+    const fit = signals[0x46];
+    const ambientC = rounded(
+        fit ? evaluateSignal(fit, AMBIENT_REFERENCE_STATE, noJitter) : median(valuesOf(samples, 'ambientTemp')),
+        1,
+    );
+    return ambientC === null ? {} : {ambientC};
 }

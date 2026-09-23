@@ -180,8 +180,10 @@ export interface SetIgnitionOptions {
      * Only with 'off': how long the engine ECU stays awake after the engine
      * stopped. Until then it rejects every request with 7F xx 22 (conditions
      * not correct) while the other ECUs are already silent; afterwards NO
-     * DATA. The recorded car does this for 10–15 s. Default 0 — asleep at
-     * once. Not part of a snapshot: restore() lands after the phase.
+     * DATA. Every recording of the car shows at least 10 s of rejections —
+     * the app gives up after 15 failed polls, so the phase's real length is
+     * unknown. Default 0 — asleep at once. Not part of a snapshot: restore()
+     * lands after the phase.
      */
     afterRunMs?: number;
 }
@@ -294,6 +296,14 @@ export interface AdapterPersona {
      * false → ATAT0/1/2 answer OK but do not change the wait window.
      */
     adaptiveTiming: boolean;
+    /**
+     * Share of the ATST window this adapter still waits under ATAT1 when
+     * the response hint is absent or unmet (default
+     * `ADAPTIVE_TIMING_FACTORS[1]`, the whole window). Measured per
+     * hardware: the vLinkers return an unhinted two-ECU batch after ≈ 55 %
+     * of the window.
+     */
+    adaptiveTimingFactor?: number;
     /**
      * false → ATIGN answers '?'.
      */

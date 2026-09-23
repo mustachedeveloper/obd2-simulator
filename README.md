@@ -108,7 +108,7 @@ listSimulators().map((simulator) => simulator.id);    // ['default-gasoline', 'd
 
 | Id | Kind | Vehicle |
 |----|------|---------|
-| `default-gasoline` | recorded | A real 2025 spark-ignition car: engine ECU + transmission ECU + a module that rejects DTC requests, CAN 29/500, 47 PIDs, its real readiness bytes, 28 in-use counters, mode 06 results and ECU identities (only the VIN serial is synthetic), replaying a real town-and-country drive with the car's measured idle speed, operating temperature, charging voltage and fuel trim |
+| `default-gasoline` | recorded | A real 2025 spark-ignition car: engine ECU + transmission ECU + a module that rejects DTC requests, CAN 29/500, the 55 PIDs the car advertises, its real readiness bytes, 28 in-use counters, mode 06 results and ECU identities (only the VIN serial is synthetic), replaying a real town-and-country drive with the car's measured idle speed, operating temperature, charging voltage and fuel trim, starting where the last recording left it (odometer, fuel level, in-use counters, the day's ambient temperature) |
 | `default-diesel` | synthetic | Compression-ignition car with the diesel pack (turbo, EGT, DPF, NOx, DEF) on the synthetic cycle |
 
 `new SimulatorEngine()` without options *is* the default gasoline simulator; passing a `profile` without a `model` gives that vehicle the synthetic cycle. `getSimulator(id)` returns the definition (`profile`, `createModel()`, `kind`, `provenance`); `createSimulator` also accepts a definition of your own. Bundle-conscious apps can import one definition (`DEFAULT_DIESEL_SIMULATOR`) and pass it instead of an id, so the registry — and the recorded drive of other vehicles — can be tree-shaken.

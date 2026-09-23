@@ -8,7 +8,7 @@ import {buildIdentity} from './identity';
 import {ecuPayloads, requestOf} from './responses';
 import {type Session, readSession} from './session';
 import {fitSignals} from './signals';
-import {deriveTraits, deriveWarmup} from './traits';
+import {ambientTrait, deriveTraits, deriveWarmup} from './traits';
 
 // Dev-only tool (never published): turns a directory of AutoPulse wire logs
 // into the generated modules of one simulated vehicle.
@@ -117,6 +117,10 @@ function run(options: Options): void {
     const samples = sessions.flatMap((session) => session.samples);
 
     const identity = buildIdentity(exchanges, {name: options.name, vinSerial: options.vinSerial});
+    const {signals, diagnosis} = fitSignals(
+        sessions.map((session) => withDecodedSamples(session.samples, session.exchanges)),
+        identity.profile.pids,
+    );
     const measured = deriveTraits(samples);
     const traits = {
         ...measured,
@@ -126,11 +130,8 @@ function run(options: Options): void {
                   sessions.map((session) => session.samples),
                   measured.coolantTargetC,
               )),
+        ...ambientTrait(signals, samples),
     };
-    const {signals, diagnosis} = fitSignals(
-        sessions.map((session) => withDecodedSamples(session.samples, session.exchanges)),
-        identity.profile.pids,
-    );
     const cycle = buildCycle(
         sessions.map((session) => toSeries(session.samples)),
         {seconds: options.cycleSeconds, minTopSpeedKmh: options.minTopSpeedKmh},

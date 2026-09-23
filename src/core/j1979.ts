@@ -25,7 +25,16 @@ const catTemp = (value: number): number[] => word(Math.round(clamp((value + 40) 
 const lambda = (value: number): number[] => [...word(Math.round(clamp(value, 0, 2) * 32768)), 0x80, 0x00];
 // Wide-band lambda with pump current (PIDs 0x34+): ratio in AB, current in
 // CD as (mA + 128) × 256 — 0x8000 is 0 mA, where a sensor at λ = 1 sits.
-const lambdaCurrent = (value: number): number[] => [...word(Math.round(clamp(value, 0, 1.99997) * 32768)), 0x80, 0x00];
+// The current follows λ (recorded: ≈ 1.1 mA per unit of λ − 1, saturating
+// at 1.3 mA while the injectors are shut and the sensor reads full lean).
+const PUMP_MA_PER_LAMBDA = 1.1;
+const FUEL_CUT_LAMBDA = 1.9;
+const FUEL_CUT_PUMP_MA = 1.3;
+const lambdaCurrent = (value: number): number[] => {
+    const ratio = clamp(value, 0, 1.99997);
+    const milliamps = ratio >= FUEL_CUT_LAMBDA ? FUEL_CUT_PUMP_MA : PUMP_MA_PER_LAMBDA * (ratio - 1);
+    return [...word(Math.round(ratio * 32768)), ...word(Math.round((milliamps + 128) * 256))];
+};
 const egtWord = (value: number): number[] => word(Math.round(clamp((value + 40) * 10, 0, 65535)));
 
 // Encoders for the PIDs the default simulated vehicles expose. Extending the
@@ -103,6 +112,8 @@ const ENCODER_TABLE: Record<number, PidEncoder> = {
     0x63: {bytes: 2, encode: (v) => word(Math.round(clamp(v, 0, 65535)))}, // reference torque
     // ── Packet PIDs: byte A is the sensor-support bitmap ─────────────
     0x64: {bytes: 5, encode: (v) => [torque(v)[0], torque(v + 40)[0], torque(v + 70)[0], torque(v + 90)[0], torque(v + 95)[0]]},
+    // Auxiliary I/O: A advertises the automatic-transmission drive status, B carries it (1 = drive).
+    0x65: {bytes: 2, encode: (v) => [0x02, v >= 0.5 ? 0x02 : 0x00]},
     0x66: {
         bytes: 5,
         encode: (v) => [
@@ -114,6 +125,14 @@ const ENCODER_TABLE: Record<number, PidEncoder> = {
     0x67: {bytes: 3, encode: (v) => [0x03, temp(v)[0], temp(v - 2)[0]]},
     0x68: {bytes: 7, encode: (v) => [0x03, temp(v)[0], temp(v + 1)[0], 0, 0, 0, 0]},
     0x69: {bytes: 7, encode: (v) => [0x07, pct(v)[0], pct(v * 0.95)[0], fuelTrim(0)[0], 0, 0, 0]},
+    // Fuel pressure control: rail A commanded and actual (10 kPa/bit) with a 40 °C fuel temperature; bank B absent.
+    0x6d: {
+        bytes: 11,
+        encode: (v) => {
+            const rail = word(Math.round(clamp(v, 0, 655_350) / 10));
+            return [0x07, ...rail, ...rail, temp(40)[0], 0, 0, 0, 0, 0];
+        },
+    },
     0x6f: {bytes: 3, encode: (v) => [0x01, raw1(v)[0], 0]},
     // Boost pressure control: actual boost A (absolute kPa, 0.03125/bit) in DE.
     0x70: {bytes: 10, encode: (v) => [0x02, 0, 0, ...word(Math.round(clamp(v, 0, 2047) / 0.03125)), 0, 0, 0, 0, 0]},
@@ -141,6 +160,15 @@ const ENCODER_TABLE: Record<number, PidEncoder> = {
     0x8b: {bytes: 7, encode: (v) => [0x51, 0, pct(v)[0], 0, 0, 0, 0]},
     0x8e: {bytes: 1, encode: torque}, // friction torque
     0x9b: {bytes: 7, encode: (v) => [0x0f, 82, 65, Math.round((clamp(v, 0, 100) * 255) / 100), 0, 0, 0]}, // DEF: level in byte D
+    // Engine and vehicle fuel rate, 0.02 g/s per bit — one engine, so the same figure twice.
+    0x9d: {
+        bytes: 4,
+        encode: (v) => {
+            const rate = word(Math.round(clamp(v, 0, 1310.7) / 0.02));
+            return [...rate, ...rate];
+        },
+    },
+    0x9e: {bytes: 2, encode: (v) => word(Math.round(clamp(v, 0, 13_107) / 0.2))}, // exhaust flow, 0.2 kg/h per bit
     0xa4: {bytes: 4, encode: (v) => [0x00, 0x01, ...word(Math.round(clamp(v, 0, 65.535) * 1000))]}, // gear ratio in CD
     0xa6: {
         bytes: 4,

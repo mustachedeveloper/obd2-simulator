@@ -53,6 +53,11 @@ export const VLINKER_ADAPTER: AdapterPersona = {
     hintCountsFrames: true,
     batch: {supported: true, maxPids: 6, multiFrameClean: true},
     adaptiveTiming: true,
+    // Recorded with ATST19: an unhinted batch (engine ECU multi-frame + the
+    // TCM's single frame) returns after 86 ms median — base plus ≈ 55 % of
+    // the 100 ms window. Only 0100, where a third module answers late, sits
+    // through the whole window on the hardware (148 ms).
+    adaptiveTimingFactor: 0.55,
     ignitionMonitor: true,
     baseLatencyMs: 32,
     latencyJitterMs: 6,

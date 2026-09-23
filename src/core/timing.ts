@@ -14,11 +14,16 @@ const TIMEOUT_UNIT_MS = 4;
  */
 export const ADAPTIVE_TIMING_FACTORS: Readonly<Record<AdaptiveTimingMode, number>> = {0: 1, 1: 1, 2: 0.5};
 
+function adaptiveFactor(state: LinkState, persona: AdapterPersona): number {
+    if (!persona.adaptiveTiming) return 1;
+    if (state.adaptiveTiming === 1) return persona.adaptiveTimingFactor ?? ADAPTIVE_TIMING_FACTORS[1];
+    return ADAPTIVE_TIMING_FACTORS[state.adaptiveTiming];
+}
+
 export function timeoutWindowMs(state: LinkState, persona: AdapterPersona): number {
     const units = Number.parseInt(state.timeoutHex, 16);
     if (!Number.isFinite(units)) return 0;
-    const factor = persona.adaptiveTiming ? ADAPTIVE_TIMING_FACTORS[state.adaptiveTiming] : 1;
-    return Math.round(units * TIMEOUT_UNIT_MS * factor);
+    return Math.round(units * TIMEOUT_UNIT_MS * adaptiveFactor(state, persona));
 }
 
 /**

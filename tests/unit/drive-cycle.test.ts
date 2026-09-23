@@ -10,7 +10,7 @@ const noJitter = () => 0;
 // model draws jitter, ever changes.
 // PIDs the model learned after the fingerprints were taken: hashed as the
 // `null` they used to be, so the pinned values keep guarding everything else.
-const ADDED_LATER: ReadonlySet<number> = new Set([0x34, 0x70, 0x71, 0x8b]);
+const ADDED_LATER: ReadonlySet<number> = new Set([0x34, 0x65, 0x6d, 0x70, 0x71, 0x8b, 0x9d, 0x9e]);
 const UNKNOWN_PID = 0xff;
 
 function fingerprint(model: DefaultDrivingModel): string {
