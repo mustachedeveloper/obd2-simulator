@@ -89,19 +89,50 @@ describe('TCP server', () => {
         await new Promise<void>((resolve) => server.close(() => resolve()));
     });
 
-    it('reports client socket errors through onClientError', async () => {
+    it('reports client socket errors through onClientError and drops the client', async () => {
         const errors: string[] = [];
         const {server, port} = await listen({
             engineFactory: () => new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE}),
             onClientError: (remote, error) => errors.push(`${remote.split(':')[0]} ${(error as NodeJS.ErrnoException).code}`),
         });
+        // The error is raised on the server-side socket itself: whether a
+        // peer's RST surfaces as ECONNRESET or as a clean EOF depends on the
+        // OS (Linux reads it as EOF when nothing is pending), so the wiring
+        // is tested with an error that is certain to happen.
+        server.on('connection', (client) =>
+            client.once('data', () => client.destroy(Object.assign(new Error('connection reset by peer'), {code: 'ECONNRESET'}))),
+        );
         const socket = createConnection({port, host: '127.0.0.1'});
         await new Promise<void>((resolve) => socket.on('connect', () => resolve()));
-        await new Promise((resolve) => setTimeout(resolve, 20)); // let the server accept before the RST
+        const closed = new Promise<void>((resolve) => socket.on('close', () => resolve()));
         socket.write('010C\r');
-        socket.resetAndDestroy(); // RST instead of FIN → ECONNRESET on the server side
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await closed;
         expect(errors).toEqual(['127.0.0.1 ECONNRESET']);
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    it('survives a client that resets the connection mid-command and keeps serving', async () => {
+        const errors: string[] = [];
+        const {server, port} = await listen({
+            engineFactory: () => new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE}),
+            onClientError: (_remote, error) => errors.push((error as NodeJS.ErrnoException).code ?? 'unknown'),
+        });
+        const rude = createConnection({port, host: '127.0.0.1'});
+        await new Promise<void>((resolve) => rude.on('connect', () => resolve()));
+        await new Promise((resolve) => setTimeout(resolve, 20)); // let the server accept before the RST
+        rude.write('010C\r');
+        rude.resetAndDestroy(); // RST instead of FIN: ECONNRESET on macOS, a plain EOF on Linux
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        for (const code of errors) expect(['ECONNRESET', 'EPIPE']).toContain(code);
+
+        const polite = createConnection({port, host: '127.0.0.1'});
+        let received = '';
+        polite.on('data', (chunk) => (received += chunk.toString('ascii')));
+        await new Promise<void>((resolve) => polite.on('connect', () => resolve()));
+        polite.write('ATE0\r');
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(received).toContain('OK\r\r>');
+        polite.destroy();
         await new Promise<void>((resolve) => server.close(() => resolve()));
     });
 
