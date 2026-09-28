@@ -29,6 +29,7 @@ export const DECODERS: Readonly<Record<number, Decoder>> = {
     0x0b: (b) => b[0] ?? 0,
     0x0e: (b) => (b[0] ?? 0) / 2 - 64,
     0x0f: temp,
+    0x11: pct,
     0x15: (b) => (b[0] ?? 0) / 200,
     0x2e: pct,
     0x33: (b) => b[0] ?? 0,
@@ -44,6 +45,7 @@ export const DECODERS: Readonly<Record<number, Decoder>> = {
     0x53: (b) => word(b, 0) / 200,
     0x55: trim,
     0x56: trim,
+    0x5e: (b) => word(b, 0) / 20,
     0x62: torque,
     0x63: (b) => word(b, 0),
     0x68: (b) => temp(b, 1),
@@ -55,9 +57,16 @@ export const DECODERS: Readonly<Record<number, Decoder>> = {
     0x8e: torque,
 };
 
-// The driving state the fits are made against comes from the same answers:
-// the app logs it only for channels on display, the ECU answers every poll.
-const STATE_PIDS: Readonly<Record<number, string>> = {0x04: 'engineLoad', 0x0c: 'rpm', 0x0d: 'speed'};
+// The driving state the fits are made against, and the channels the drive
+// cycle is cut from, come from the same answers: the app logs them only
+// for channels on display, the ECU answers every poll.
+const STATE_PIDS: Readonly<Record<number, string>> = {
+    0x04: 'engineLoad',
+    0x0c: 'rpm',
+    0x0d: 'speed',
+    0x11: 'throttle',
+    0x5e: 'fuelRate',
+};
 const CHANNEL_OF: ReadonlyMap<number, string> = new Map([
     ...Object.entries(CHANNELS).map(([id, channel]) => [channel.pid, id] as const),
     ...Object.entries(STATE_PIDS).map(([pid, id]) => [Number(pid), id] as const),

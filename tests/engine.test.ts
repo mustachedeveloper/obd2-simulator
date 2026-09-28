@@ -21,7 +21,7 @@ const engineAt = (ms: number, extra: ConstructorParameters<typeof SimulatorEngin
 describe('AT handshake', () => {
     it('answers the init sequence like real hardware, echo included', () => {
         const engine = new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE});
-        expect(engine.handleCommand('ATZ')).toBe('ATZ\r\rELM327 v1.5');
+        expect(engine.handleCommand('ATZ')).toBe('ATZ\r\r\rELM327 v1.5');
         expect(engine.handleCommand('ATE0')).toBe('ATE0\rOK');
         expect(engine.handleCommand('ATL0')).toBe('OK');
         expect(engine.handleCommand('ATSP0')).toBe('OK');

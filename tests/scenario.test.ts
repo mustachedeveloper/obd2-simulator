@@ -144,7 +144,7 @@ describe('adapter reset and command events', () => {
     it('power-cycles the adapter: settings back to defaults, banner printed unprompted', () => {
         const engine = engineAt(0);
         engine.handleCommand('ATH1');
-        expect(engine.resetAdapter()).toBe('\rELM327 v1.5\r\r>');
+        expect(engine.resetAdapter()).toBe('\r\rELM327 v1.5\r\r>');
         expect(engine.linkState).toMatchObject({echo: true, headers: false, searched: false});
     });
 
@@ -246,7 +246,7 @@ describe('MemoryLink fault injection', () => {
         await link.write('ATE0');
         const pending = collect(link, 20);
         link.simulateAdapterReset();
-        expect(await pending).toBe('ATE0\rOK\r\r>\rELM327 v1.5\r\r>');
+        expect(await pending).toBe('ATE0\rOK\r\r>\r\rELM327 v1.5\r\r>');
         expect(link.currentEngine.linkState.echo).toBe(true);
         await link.disconnect();
     });

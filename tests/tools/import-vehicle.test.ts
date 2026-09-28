@@ -4,7 +4,11 @@ import {buildCycle, toSeries} from '../../tools/import-vehicle/cycle';
 import {decodeMode01, withDecodedSamples} from '../../tools/import-vehicle/decode';
 import {buildIdentity, sourceAddresses} from '../../tools/import-vehicle/identity';
 import {ecuPayloads, framePaddingOf} from '../../tools/import-vehicle/responses';
-import {fitSignals} from '../../tools/import-vehicle/signals';
+import {DEFAULT_FIT_OPTIONS, fitSignals} from '../../tools/import-vehicle/signals';
+
+// Most fits below come from one synthetic recording; the vehicle importer asks for three.
+const fitOnce: typeof fitSignals = (sessions, pids, options = DEFAULT_FIT_OPTIONS) =>
+    fitSignals(sessions, pids, {...options, minSessions: 1});
 import {ambientTrait, deriveTraits, deriveWarmup} from '../../tools/import-vehicle/traits';
 import type {Exchange, Sample} from '../../tools/import-vehicle/session';
 
@@ -271,6 +275,27 @@ describe('drive cycle extraction', () => {
     it('fails when no drive qualifies', () => {
         expect(() => buildCycle([toSeries(samples)], {seconds: 70, minTopSpeedKmh: 150})).toThrow('no window');
     });
+
+    it('prefers a window whose engine-off coasting share matches the recordings', () => {
+        // Two identical drives back to back; only the second one coasts with the engine stopped for 4 s of its 40 s on the move.
+        const twice: Sample[] = [
+            ...samples,
+            ...samples.map((sample) => ({
+                ...sample,
+                t: sample.t + 80_000,
+                v: sample.p === 'rpm' && sample.t >= 40_000 && sample.t < 44_000 ? 0 : sample.v,
+            })),
+        ];
+        const cycle = buildCycle([toSeries(twice)], {seconds: 80, minTopSpeedKmh: 90});
+        expect(cycle.rpm.filter((rpm) => rpm === 0)).toHaveLength(4);
+        expect(cycle.speedKmh[cycle.rpm.indexOf(0)]).toBe(100); // rolling, engine off
+        // Without any coasting anywhere, the first window is as good as the second.
+        const plain = buildCycle([toSeries([...samples, ...samples.map((sample) => ({...sample, t: sample.t + 80_000}))])], {
+            seconds: 80,
+            minTopSpeedKmh: 90,
+        });
+        expect(Math.min(...plain.rpm)).toBe(900);
+    });
 });
 
 describe('fitSignals', () => {
@@ -292,7 +317,7 @@ describe('fitSignals', () => {
                 {t: t + 60, p: 'someUnknownChannel', v: 1},
             ];
         }).flat();
-    const {signals: fits, diagnosis} = fitSignals([drive(0), drive(10_000_000)], [0x0b, 0x0e, 0x33]);
+    const {signals: fits, diagnosis} = fitOnce([drive(0), drive(10_000_000)], [0x0b, 0x0e, 0x33]);
 
     it('recovers how a signal follows the driving state', () => {
         const map = fits[0x0b];
@@ -330,7 +355,7 @@ describe('fitSignals', () => {
         const noisy = drive(0).map((sample, i) =>
             sample.p === 'intakeMap' ? {...sample, v: sample.v + ((i * 7919) % 41) - 20} : sample,
         );
-        const fit = fitSignals([noisy], [0x0b]).signals[0x0b];
+        const fit = fitOnce([noisy], [0x0b]).signals[0x0b];
         expect(fit?.perLoadPct).toBeCloseTo(0.8, 0);
         expect(fit?.noise).toBeLessThanOrEqual(0.02 * ((fit?.max ?? 0) - (fit?.min ?? 0)) + 1e-9);
     });
@@ -340,11 +365,11 @@ describe('fitSignals', () => {
         const pedal = drive(0).map((sample, i) =>
             sample.p === 'baro' ? {...sample, p: 'pedalPosition', v: Math.floor(i / 7) % 20 === 0 ? 60 : 14} : sample,
         );
-        expect(fitSignals([pedal], [0x49]).signals).toEqual({});
+        expect(fitOnce([pedal], [0x49]).signals).toEqual({});
     });
 
     it('needs a minimum of samples even for a constant', () => {
-        expect(fitSignals([drive(0).slice(0, 7 * 10)], [0x33]).signals).toEqual({}); // 10 samples are not
+        expect(fitOnce([drive(0).slice(0, 7 * 10)], [0x33]).signals).toEqual({}); // 10 samples are not
     });
 
     it('judges "barely moves" against the full scale, so small values can be constants', () => {
@@ -352,23 +377,23 @@ describe('fitSignals', () => {
         const friction = drive(0).map((sample, i) =>
             sample.p === 'baro' ? {...sample, p: 'frictionTorque', v: 4 + (i % 3)} : sample,
         );
-        expect(fitSignals([friction], [0x8e]).signals[0x8e]).toMatchObject({base: 5, perLoadPct: 0, min: 4, max: 6});
+        expect(fitOnce([friction], [0x8e]).signals[0x8e]).toMatchObject({base: 5, perLoadPct: 0, min: 4, max: 6});
     });
 
     it('never fits lambda or counters', () => {
         const lambda = drive(0).map((sample) => (sample.p === 'baro' ? {...sample, p: 'commandedLambda', v: 1} : sample));
-        expect(fitSignals([lambda], [0x44]).signals).toEqual({});
+        expect(fitOnce([lambda], [0x44]).signals).toEqual({});
     });
 
     it('fits only requested PIDs and known channels, and needs a fresh driving state', () => {
-        expect(Object.keys(fitSignals([drive(0)], [0x33]).signals)).toEqual([String(0x33)]);
+        expect(Object.keys(fitOnce([drive(0)], [0x33]).signals)).toEqual([String(0x33)]);
         const stale: Sample[] = [
             {t: 0, p: 'engineLoad', v: 20},
             {t: 0, p: 'rpm', v: 900},
             {t: 0, p: 'speed', v: 0},
             {t: 60_000, p: 'baro', v: 100},
         ];
-        expect(fitSignals([stale], [0x33]).signals).toEqual({});
+        expect(fitOnce([stale], [0x33]).signals).toEqual({});
     });
 
     it('fits against rpm and speed alone when load was hardly ever logged with the channel', () => {
@@ -384,17 +409,26 @@ describe('fitSignals', () => {
                 {t: t + 30, p: 'egtB1S1', v: 300 + (80 * rpm) / 1000 + 1.5 * speed},
             ];
         }).flat();
-        const fit = fitSignals([egt], [0x78]).signals[0x78];
+        const fit = fitOnce([egt], [0x78]).signals[0x78];
         expect(fit?.base).toBeCloseTo(300, 0);
         expect(fit?.perLoadPct).toBe(0);
         expect(fit?.perKrpm).toBeCloseTo(80, 0);
         expect(fit?.perKmh).toBeCloseTo(1.5, 2);
     });
 
+    it('needs the channel in three recordings before calling anything a constant', () => {
+        const once = drive(0);
+        expect(fitSignals([once, drive(10_000_000)], [0x33]).signals).toEqual({});
+        expect(fitSignals([once, drive(10_000_000)], [0x33]).diagnosis).toEqual([
+            {pid: 0x33, samples: expect.any(Number), rSquared: null, sessions: 2, outcome: 'none'},
+        ]);
+        expect(fitSignals([once, drive(10_000_000), drive(20_000_000)], [0x33]).signals[0x33]?.base).toBe(100);
+    });
+
     it('does not fit slopes to a handful of samples', () => {
         const few = drive(0).slice(0, 7 * 20);
-        expect(fitSignals([few], [0x0b]).signals[0x0b]).toBeUndefined(); // lively and unexplained → generic formula
-        expect(fitSignals([few], [0x33]).signals[0x33]?.base).toBe(100); // 20 samples are enough for a constant
+        expect(fitOnce([few], [0x0b]).signals[0x0b]).toBeUndefined(); // lively and unexplained → generic formula
+        expect(fitOnce([few], [0x33]).signals[0x33]?.base).toBe(100); // 20 samples are enough for a constant
     });
 });
 
@@ -438,6 +472,33 @@ describe('deriveTraits', () => {
         expect(traits.coolantWarmupTauS).toBeGreaterThan(170);
         expect(traits.coolantWarmupTauS).toBeLessThan(230);
         expect(traits.oilOverCoolantC).toBe(2); // warm oil median 95 − target 93
+    });
+
+    it('brings the warm-up time constant to the reference heat when rpm and load were logged', () => {
+        // The same warm-up curve (τ = 200 s as measured) three times, once idling, once cruising at the reference heat, once loaded.
+        const curve = (offsetMs: number): Sample[] =>
+            Array.from({length: 120}, (_, i) => ({
+                t: offsetMs + i * 10_000,
+                p: 'coolant',
+                v: Math.round(44 + (93 - 44) * (1 - Math.exp(-(i * 10) / 200))),
+            }));
+        const state = (offsetMs: number, rpm: number, load: number): Sample[] =>
+            Array.from({length: 1200}, (_, i) => [
+                {t: offsetMs + i * 1000, p: 'rpm', v: rpm},
+                {t: offsetMs + i * 1000 + 500, p: 'engineLoad', v: load},
+            ]).flat();
+        const idling = [...curve(0), ...state(0, 930, 22)];
+        const cruising = [...curve(10_000_000), ...state(10_000_000, 1500, 30)];
+        const loaded = [...curve(20_000_000), ...state(20_000_000, 1800, 35)];
+        const measured = deriveWarmup([curve(0), curve(10_000_000), curve(20_000_000)], 93).coolantWarmupTauS ?? 0;
+        expect(measured).toBeGreaterThan(170);
+        expect(measured).toBeLessThan(230);
+        expect(deriveWarmup([cruising, cruising, cruising], 93).coolantWarmupTauS).toBe(measured);
+        // Idling puts in little heat, so the same curve means a quick engine: a shorter reference τ. Loaded: the opposite.
+        const fromIdling = deriveWarmup([idling, idling, idling], 93).coolantWarmupTauS ?? 0;
+        const fromLoaded = deriveWarmup([loaded, loaded, loaded], 93).coolantWarmupTauS ?? 0;
+        expect(fromIdling).toBeLessThan(measured * 0.6);
+        expect(fromLoaded).toBeGreaterThan(measured * 1.2);
     });
 
     it('says nothing about the warm-up without enough cold starts', () => {
@@ -493,8 +554,12 @@ describe('decodeMode01', () => {
         expect(at('010C0D055E 1', '00B\r0:410C0EE40D00\r1:05565E0017AAAA\r\r')).toEqual([
             {t: 1, p: 'rpm', v: 953},
             {t: 1, p: 'speed', v: 0},
+            {t: 1, p: 'fuelRate', v: 1.15},
         ]);
-        expect(at('0104115C 1', '41043811205C89\r\r')).toEqual([{t: 1, p: 'engineLoad', v: (0x38 * 100) / 255}]);
+        expect(at('0104115C 1', '41043811205C89\r\r')).toEqual([
+            {t: 1, p: 'engineLoad', v: (0x38 * 100) / 255},
+            {t: 1, p: 'throttle', v: (0x20 * 100) / 255},
+        ]);
         expect(at('01430E 1', '4143002A0E96\r\r')).toEqual([
             {t: 1, p: 'absoluteLoad', v: (0x2a * 100) / 255},
             {t: 1, p: 'timingAdvance', v: 11},

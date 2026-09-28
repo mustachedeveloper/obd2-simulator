@@ -1,6 +1,6 @@
 import {type DriveCycle, type DriveCyclePlayer, type DrivingState, createDriveCyclePlayer} from './drive-cycle';
 import {type SignalFit, type SignalFits, evaluateSignal, resolveSignals} from './signals';
-import {AMBIENT_REFERENCE_STATE, type VehicleTraits, resolveTraits} from './traits';
+import {AMBIENT_REFERENCE_STATE, type VehicleTraits, resolveTraits, warmupHeat, warmupTauScale} from './traits';
 import type {DrivingModel} from './types';
 
 // The default driving cycle: 20s idle → 8s acceleration → cruise at
@@ -27,22 +27,40 @@ const GASOLINE_DENSITY_KG_PER_L = 0.745;
 const EXHAUST_KG_PER_H_PER_AIR_GPS = 3.6 * (1 + 1 / 14.7);
 const noJitter = (): number => 0;
 // The map-controlled thermostat of the recorded car: once warm, the coolant
-// sits ≈ 4 °C under the target while standing and up to 7 °C above it on the
-// move, following the speed of the last five minutes (correlation 0.72 with
-// the 300 s mean, 0.53 with the instant). Oil does not swing.
+// sits ≈ 4.5 °C under the target while standing and up to 2.7 °C above it
+// on the move, following the speed of the last five minutes (9 691 warm
+// five-minute windows over 100+ recordings; the correlation is with speed,
+// 0.47, not with load). Around that mean it cycles ± 2.5 °C about once a
+// minute (deviation 1.8 °C rms, half-cycles of 25–38 s) as the thermostat
+// opens and closes. Oil does neither.
 const COOLANT_SWING_WINDOW_S = 300;
 const COOLANT_SWING_STEP_S = 15;
 const COOLANT_SWING_C: readonly (readonly [number, number])[] = [
-    [0, -4],
-    [20, 2.5],
-    [60, 3.5],
-    [90, 7],
+    [0, -4.5],
+    [10, -2],
+    [20, -0.5],
+    [40, 1.3],
+    [60, 2.4],
+    [80, 2.7],
+    [90, 2],
 ];
+const COOLANT_CYCLE_AMPLITUDE_C = 2.5;
+const COOLANT_CYCLE_PERIOD_S = 65;
 // Exhaust-side sensors lag the drive by tens of seconds: catalyst, EGT and
 // DPF temperatures follow the state averaged over the last 45 s.
 const THERMAL_PIDS: ReadonlySet<number> = new Set([0x3c, 0x3e, 0x78, 0x79, 0x7c]);
 const THERMAL_WINDOW_S = 45;
 const THERMAL_STEP_S = 5;
+// The warm-up time constant follows the heat put in since power-on (see
+// `warmupTauScale`), sampled every 15 s over the first 20 minutes — by then
+// any warm-up is over.
+const WARMUP_HORIZON_S = 1200;
+const WARMUP_STEP_S = 15;
+// Below this the crankshaft is not turning on its own: stopped or cranking.
+const RUNNING_RPM = 300;
+// Above this the alternator charges; between, the starter is turning it.
+const CHARGING_RPM = 400;
+const BATTERY_VOLTAGE_V = 12.4;
 
 function interpolate(points: readonly (readonly [number, number])[], x: number): number {
     const [first, last] = [points[0], points[points.length - 1]];
@@ -115,12 +133,19 @@ const ENGINE_OFF_VALUES: Readonly<Record<number, number>> = {
     0x0b: 101, // manifold pressure: atmospheric, no vacuum
     0x0e: 0, // timing advance
     0x10: 0, // MAF
-    0x42: 12.4, // module voltage: battery, no alternator
+    0x42: BATTERY_VOLTAGE_V, // module voltage: battery, no alternator
     0x5e: 0, // fuel rate
     0x66: 0, // MAF sensors
     0x9d: 0, // engine fuel rate
     0x9e: 0, // exhaust flow
 };
+// Coasting with the engine stopped (a recorded cycle with rpm 0 on the
+// move: the car's start-stop shuts the engine while rolling, 2–20 s at a
+// time): the same, except the module voltage stays at charging level —
+// the recordings read 13.9–14.6 V throughout — and the commanded lambda
+// reads full lean like an overrun fuel cut while the wide-band sensor,
+// with no exhaust flow, sits at stoichiometry.
+const {0x42: _charging, ...COASTING_VALUES} = ENGINE_OFF_VALUES;
 
 // Distance driven since power-on: piecewise integral of the speed profile.
 // One full 96s cycle covers 0.1 (accel) + 1.5 (cruise) + 0.1 (decel) km.
@@ -179,11 +204,11 @@ export class DefaultDrivingModel implements DrivingModel {
         const state = THERMAL_PIDS.has(pid)
             ? this.laggedState(elapsedSeconds, THERMAL_WINDOW_S, THERMAL_STEP_S)
             : this.drivingState(elapsedSeconds, jitter);
-        const {coolantStartC, coolantTargetC, coolantWarmupTauS, oilOverCoolantC} = this.traits;
-        const warmup = 1 - Math.exp(-elapsedSeconds / coolantWarmupTauS);
-        const coolantC = coolantStartC + (coolantTargetC - coolantStartC) * warmup + this.coolantSwingC(elapsedSeconds) * warmup;
-        const engineOff = state.rpm === 0 ? ENGINE_OFF_VALUES[pid] : undefined;
-        if (engineOff !== undefined) return engineOff;
+        const stopped = state.rpm < RUNNING_RPM;
+        const coasting = stopped && state.speedKmh >= 1;
+        const stoppedValue = stopped ? (coasting ? COASTING_VALUES : ENGINE_OFF_VALUES)[pid] : undefined;
+        if (stoppedValue !== undefined) return stoppedValue;
+        if (pid === 0x44 && coasting) return FUEL_CUT_LAMBDA;
         if (LAMBDA_PIDS.has(pid) && this.fuelCut(state)) return FUEL_CUT_LAMBDA;
         const fit = this.signals.get(pid);
         if (fit) {
@@ -193,7 +218,7 @@ export class DefaultDrivingModel implements DrivingModel {
         switch (pid) {
             case 0x03:
                 // Open loop while warming up, closed loop after.
-                return warmup > 0.3 ? 2 : 1;
+                return this.warmup(elapsedSeconds) > 0.3 ? 2 : 1;
             case 0x07:
                 return this.traits.longTermFuelTrimPct + jitter(1); // LTFT B1
             case 0x08:
@@ -241,9 +266,9 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x32:
                 return -100 + jitter(50); // evap vapor pressure (Pa)
             case 0x3c:
-                return 200 + 460 * warmup + state.engineLoadPct + jitter(5); // catalyst B1S1
+                return 200 + 460 * this.warmup(elapsedSeconds) + state.engineLoadPct + jitter(5); // catalyst B1S1
             case 0x3e:
-                return 180 + 430 * warmup + state.engineLoadPct + jitter(5); // catalyst B1S2
+                return 180 + 430 * this.warmup(elapsedSeconds) + state.engineLoadPct + jitter(5); // catalyst B1S2
             case 0x43:
                 return state.engineLoadPct * 1.05; // absolute load
             case 0x44:
@@ -293,7 +318,7 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x66:
                 return this.airflowGps(state, jitter); // MAF sensors
             case 0x67:
-                return coolantC + jitter(0.5);
+                return this.coolantC(elapsedSeconds) + jitter(0.5);
             case 0x68:
                 return this.traits.intakeTempC + this.ambientShiftC + jitter(1.5); // IAT sensors
             case 0x69:
@@ -346,7 +371,7 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x04:
                 return state.engineLoadPct;
             case 0x05:
-                return coolantC + jitter(0.5);
+                return this.coolantC(elapsedSeconds) + jitter(0.5);
             case 0x06:
                 return jitter(4);
             case 0x0b:
@@ -372,14 +397,17 @@ export class DefaultDrivingModel implements DrivingModel {
             case 0x33:
                 return 101 + jitter(0.3);
             case 0x42:
-                return state.rpm > 400 ? this.traits.chargingVoltage + jitter(0.1) : 12.4 + jitter(0.1);
+                return coasting || state.rpm > CHARGING_RPM
+                    ? this.traits.chargingVoltage + jitter(0.1)
+                    : BATTERY_VOLTAGE_V + jitter(0.1);
             case 0x46:
                 return this.traits.ambientC + jitter(1);
             case 0x51:
                 return this.fuelType;
             case 0x5c: {
                 // Oil warms slower than coolant and settles a bit hotter.
-                const oilWarmup = 1 - Math.exp(-elapsedSeconds / (coolantWarmupTauS * OIL_WARMUP_LAG));
+                const {coolantStartC, coolantTargetC, oilOverCoolantC} = this.traits;
+                const oilWarmup = 1 - Math.exp(-elapsedSeconds / (this.warmupTauS(elapsedSeconds) * OIL_WARMUP_LAG));
                 return coolantStartC + (coolantTargetC + oilOverCoolantC - coolantStartC) * oilWarmup + jitter(0.5);
             }
             case 0x62:
@@ -416,6 +444,31 @@ export class DefaultDrivingModel implements DrivingModel {
             throttlePct: mean((s) => s.throttlePct),
             engineLoadPct: mean((s) => s.engineLoadPct),
         };
+    }
+
+    // Warm-up progress 0..1 since power-on.
+    private warmup(elapsedSeconds: number): number {
+        return 1 - Math.exp(-elapsedSeconds / this.warmupTauS(elapsedSeconds));
+    }
+
+    // The trait's τ scaled by the heat the engine has put in so far: a
+    // loaded drive warms the coolant faster than idling in traffic.
+    private warmupTauS(elapsedSeconds: number): number {
+        const horizon = Math.min(Math.max(0, elapsedSeconds), WARMUP_HORIZON_S);
+        let total = 0;
+        let count = 0;
+        for (let moment = 0; moment <= horizon; moment += WARMUP_STEP_S) {
+            total += warmupHeat(this.drivingState(moment, noJitter));
+            count++;
+        }
+        return this.traits.coolantWarmupTauS * warmupTauScale(total / Math.max(1, count));
+    }
+
+    private coolantC(elapsedSeconds: number): number {
+        const {coolantStartC, coolantTargetC} = this.traits;
+        const warmup = this.warmup(elapsedSeconds);
+        const cycle = COOLANT_CYCLE_AMPLITUDE_C * Math.sin((2 * Math.PI * elapsedSeconds) / COOLANT_CYCLE_PERIOD_S);
+        return coolantStartC + (coolantTargetC - coolantStartC) * warmup + (this.coolantSwingC(elapsedSeconds) + cycle) * warmup;
     }
 
     private coolantSwingC(elapsedSeconds: number): number {

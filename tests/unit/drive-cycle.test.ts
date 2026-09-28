@@ -31,11 +31,11 @@ function fingerprint(model: DefaultDrivingModel): string {
 
 describe('DefaultDrivingModel defaults', () => {
     it('are untouched by the traits / drive-cycle options', () => {
-        // Re-pinned 2026-09-23 when the warm coolant got its thermostat swing (PIDs 05 / 67).
-        expect(fingerprint(new DefaultDrivingModel())).toBe('a18d7a9d');
-        expect(fingerprint(new DefaultDrivingModel({fuelType: 4}))).toBe('58db2c6');
-        expect(fingerprint(new DefaultDrivingModel({engineOffAtStandstill: true}))).toBe('4b4f9a7f');
-        expect(fingerprint(new DefaultDrivingModel({traits: {}}))).toBe('a18d7a9d');
+        // Re-pinned 2026-09-28: the warm-up τ follows the heat put in, the warm coolant swings and cycles as the corpus does (PIDs 03 / 05 / 3C / 3E / 5C / 67).
+        expect(fingerprint(new DefaultDrivingModel())).toBe('220c532b');
+        expect(fingerprint(new DefaultDrivingModel({fuelType: 4}))).toBe('d90fe090');
+        expect(fingerprint(new DefaultDrivingModel({engineOffAtStandstill: true}))).toBe('f7c3eb90');
+        expect(fingerprint(new DefaultDrivingModel({traits: {}}))).toBe('220c532b');
     });
 });
 
@@ -54,9 +54,11 @@ describe('vehicle traits', () => {
 
     it('replace the matching defaults', () => {
         expect(at(0x0c, 5)).toBe(930); // idling
-        // Fully warm; the thermostat runs +4.1 °C over the target for the synthetic cycle's 5-minute mean speed (≈ 63 km/h).
-        expect(at(0x05, 100_000)).toBeCloseTo(97.125, 3);
-        expect(at(0x67, 100_000)).toBeCloseTo(97.125, 3);
+        // Fully warm; the thermostat runs ≈ +2.4 °C over the target for the synthetic cycle's 5-minute mean speed (≈ 63 km/h), cycling ± 2.5.
+        const warm = at(0x05, 100_000) ?? 0;
+        expect(warm).toBeGreaterThan(93 + 2.4 - 2.5);
+        expect(warm).toBeLessThan(93 + 2.5 + 2.5);
+        expect(at(0x67, 100_000)).toBeCloseTo(warm, 6);
         expect(at(0x5c, 100_000)).toBeCloseTo(95, 3); // oil settles 2 °C above coolant on this car (default 8)
         expect(at(0x42, 5)).toBe(13.9);
         expect(at(0x07, 5)).toBe(-5.5);
@@ -129,7 +131,45 @@ describe('fitted signals', () => {
     });
 
     it('leave the defaults untouched when absent or empty', () => {
-        expect(fingerprint(new DefaultDrivingModel({signals: {}}))).toBe('a18d7a9d');
+        expect(fingerprint(new DefaultDrivingModel({signals: {}}))).toBe('220c532b');
+    });
+});
+
+describe('engine-off coasting in a recorded drive', () => {
+    // 1 Hz: standing, then rolling at 30 km/h with the engine stopped for two seconds (start-stop on the move), then running again.
+    const cycle: DriveCycle = {
+        stepSeconds: 1,
+        speedKmh: [0, 30, 30, 30, 30, 30, 0],
+        rpm: [930, 1500, 0, 0, 1500, 1500, 930],
+        throttlePct: [12, 20, 10.6, 10.6, 20, 20, 12],
+        engineLoadPct: [20, 30, 0, 0, 30, 30, 20],
+    };
+    const model = new DefaultDrivingModel({cycle});
+    const at = (pid: number, seconds: number) => model.value(pid, seconds, noJitter);
+
+    it('reads like the recordings: no rpm, no fuel, no air, atmospheric manifold, still charging', () => {
+        expect(at(0x0c, 2.5)).toBe(0);
+        expect(at(0x0d, 2.5)).toBe(30);
+        expect(at(0x04, 2.5)).toBe(0);
+        expect(at(0x5e, 2.5)).toBe(0);
+        expect(at(0x10, 2.5)).toBe(0);
+        expect(at(0x0b, 2.5)).toBe(101);
+        expect(at(0x42, 2.5)).toBe(14.1); // 13.9–14.6 V while coasting in every recording
+    });
+
+    it('commands full lean like a fuel cut while the wide-band sensor sits at stoichiometry (no exhaust flow)', () => {
+        expect(at(0x44, 2.5)).toBeCloseTo(1.99997, 5);
+        expect(at(0x34, 2.5)).toBe(1);
+        expect(at(0x24, 2.5)).toBe(1);
+        // Running again: everything back to normal.
+        expect(at(0x44, 5)).toBe(1);
+        expect(at(0x42, 5)).toBe(14.1);
+    });
+
+    it('keeps the battery voltage for a hybrid stopped at standstill', () => {
+        const hybrid = new DefaultDrivingModel({cycle, engineOffAtStandstill: true});
+        expect(hybrid.value(0x42, 0, noJitter)).toBe(12.4);
+        expect(hybrid.value(0x42, 2.5, noJitter)).toBe(14.1);
     });
 });
 

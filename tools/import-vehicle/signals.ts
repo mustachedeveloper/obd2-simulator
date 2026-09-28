@@ -91,6 +91,11 @@ export interface FitOptions {
      * Upper bound of the noise, as a share of the measured range.
      */
     maxNoiseShare: number;
+    /**
+     * A channel logged in fewer recordings than this is not fitted at all:
+     * one hot afternoon's constant is not the vehicle's.
+     */
+    minSessions: number;
 }
 
 export const DEFAULT_FIT_OPTIONS: FitOptions = {
@@ -101,6 +106,7 @@ export const DEFAULT_FIT_OPTIONS: FitOptions = {
     quietRangeShare: 0.15,
     minConstantSamples: 20,
     maxNoiseShare: 0.02,
+    minSessions: 3,
 };
 
 const SPAN_OF: ReadonlyMap<number, number> = new Map(Object.values(CHANNELS).map((channel) => [channel.pid, channel.span]));
@@ -217,6 +223,10 @@ export interface FitDiagnosis {
      * Share of the variance the driving state explains; null → too few samples to try.
      */
     rSquared: number | null;
+    /**
+     * Recordings the channel was logged in.
+     */
+    sessions: number;
     outcome: 'sloped' | 'constant' | 'none';
 }
 
@@ -280,24 +290,34 @@ export function fitSignals(
     options: FitOptions = DEFAULT_FIT_OPTIONS,
 ): SignalFitResult {
     const rows = new Map<number, Row[]>();
+    const sessionsOf = new Map<number, number>();
     for (const samples of sessions) {
         for (const [pid, sessionRows] of rowsOf(samples)) {
             const bucket = rows.get(pid) ?? [];
             for (const row of sessionRows) bucket.push(row);
             rows.set(pid, bucket);
+            if (sessionRows.length > 0) sessionsOf.set(pid, (sessionsOf.get(pid) ?? 0) + 1);
         }
     }
     const fitted = [...rows.entries()]
         .filter(([pid, pidRows]) => pids.includes(pid) && pidRows.length > 0)
         .sort(([a], [b]) => a - b)
-        .map(([pid, pidRows]) => ({pid, ...fitOne(pidRows, SPAN_OF.get(pid) ?? 1, options)}));
+        .map(([pid, pidRows]) => {
+            const recorded = sessionsOf.get(pid) ?? 0;
+            const one =
+                recorded >= options.minSessions
+                    ? fitOne(pidRows, SPAN_OF.get(pid) ?? 1, options)
+                    : {fit: null, rSquared: null, samples: pidRows.length};
+            return {pid, sessions: recorded, ...one};
+        });
     const sloped = (fit: SignalFit) => fit.perLoadPct !== 0 || fit.perKrpm !== 0 || fit.perKmh !== 0;
     return {
         signals: Object.fromEntries(fitted.flatMap(({pid, fit}) => (fit ? [[pid, fit] as const] : []))),
-        diagnosis: fitted.map(({pid, fit, rSquared, samples}) => ({
+        diagnosis: fitted.map(({pid, fit, rSquared, samples, sessions: recorded}) => ({
             pid,
             samples,
             rSquared,
+            sessions: recorded,
             outcome: fit === null ? 'none' : sloped(fit) ? 'sloped' : 'constant',
         })),
     };

@@ -1,5 +1,5 @@
 import {type SignalFits, evaluateSignal} from '../../src/core/signals';
-import {AMBIENT_REFERENCE_STATE, type VehicleTraits} from '../../src/core/traits';
+import {AMBIENT_REFERENCE_STATE, type VehicleTraits, warmupHeat, warmupTauScale} from '../../src/core/traits';
 import type {Sample} from './session';
 
 // Measured constants of the vehicle: medians over everything it reported,
@@ -49,24 +49,63 @@ const ONE_TAU_SHARE = 0.632;
 
 interface ColdStart {
     startC: number;
+    /**
+     * Brought to the reference heat of `WARMUP_REFERENCE_STATE`.
+     */
     tauS: number;
 }
 
-// A session that began with a cold engine and got one time constant of the way.
+// Mean heat (see warmupHeat) the engine produced between two moments, from
+// the rpm and load logged per second; null when neither was logged. The
+// seconds that hold both give the mean of their products, as the model
+// computes it; otherwise the product of the two means stands in.
+function meanHeatBetween(samples: readonly Sample[], fromMs: number, toMs: number): number | null {
+    const perSecond = new Map<number, {rpm: number[]; load: number[]}>();
+    for (const sample of samples) {
+        if ((sample.p !== 'rpm' && sample.p !== 'engineLoad') || sample.t < fromMs || sample.t > toMs) continue;
+        const second = Math.floor(sample.t / 1000);
+        const bucket = perSecond.get(second) ?? {rpm: [], load: []};
+        (sample.p === 'rpm' ? bucket.rpm : bucket.load).push(sample.v);
+        perSecond.set(second, bucket);
+    }
+    const buckets = [...perSecond.values()];
+    const paired = buckets.filter((bucket) => bucket.rpm.length > 0 && bucket.load.length > 0);
+    const meanOf = (values: readonly number[]): number => values.reduce((sum, value) => sum + value, 0) / values.length;
+    if (paired.length > 0) {
+        return meanOf(
+            paired.map((bucket) =>
+                warmupHeat({rpm: meanOf(bucket.rpm), engineLoadPct: meanOf(bucket.load), speedKmh: 0, throttlePct: 0}),
+            ),
+        );
+    }
+    const rpms = buckets.flatMap((bucket) => bucket.rpm);
+    const loads = buckets.flatMap((bucket) => bucket.load);
+    if (rpms.length === 0 || loads.length === 0) return null;
+    return warmupHeat({rpm: meanOf(rpms), engineLoadPct: meanOf(loads), speedKmh: 0, throttlePct: 0});
+}
+
+// A session that began with a cold engine and got one time constant of the
+// way; the time that took is brought to the reference heat, so a warm-up
+// measured while idling and one measured on the motorway agree.
 function coldStartOf(samples: readonly Sample[], targetC: number): ColdStart | null {
     const coolant = samples.filter((sample) => sample.p === 'coolant').sort((a, b) => a.t - b.t);
     const [first] = coolant;
     if (!first || first.v > COLD_START_MAX_C) return null;
     const goal = first.v + (targetC - first.v) * ONE_TAU_SHARE;
     const reached = coolant.find((sample) => sample.v >= goal);
-    return reached ? {startC: first.v, tauS: (reached.t - first.t) / 1000} : null;
+    if (!reached) return null;
+    const heat = meanHeatBetween(samples, first.t, reached.t);
+    const scale = heat === null ? 1 : warmupTauScale(heat);
+    return {startC: first.v, tauS: (reached.t - first.t) / 1000 / scale};
 }
 
 /**
  * Start temperature and warm-up time constant from the sessions that began
  * cold, and how far above the coolant the warm oil sits. Sessions that
  * began warm (most do: short stops) say nothing about a warm-up and are
- * ignored; fewer than three cold starts → no verdict.
+ * ignored; fewer than three cold starts → no verdict. Pass samples that
+ * carry rpm and load (the decoded exchanges do): the time constant is
+ * normalised to the reference heat, without them it is taken as measured.
  */
 export function deriveWarmup(sessions: readonly (readonly Sample[])[], coolantTargetC: number): Partial<VehicleTraits> {
     const cold = sessions

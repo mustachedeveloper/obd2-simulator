@@ -67,6 +67,7 @@ export function renderProfileModule(profile: VehicleProfile, provenance: Simulat
         profile.framePadding === undefined ? '' : `framePadding: ${hex(profile.framePadding)},`,
         profile.transmissionPid === undefined ? '' : `transmissionPid: ${quoted(profile.transmissionPid)},`,
         profile.sourceAddress === undefined ? '' : `sourceAddress: ${hex(profile.sourceAddress)},`,
+        profile.afterRunMs === undefined ? '' : `afterRunMs: ${profile.afterRunMs},`,
         '};',
         '',
         'export const PROVENANCE: SimulatorProvenance = {',

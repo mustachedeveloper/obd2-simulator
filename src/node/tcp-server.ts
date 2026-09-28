@@ -72,13 +72,22 @@ function serveClient(
                 new Promise<void>((resolve) => {
                     const timer = setTimeout(() => {
                         timers.delete(timer);
-                        if (!socket.destroyed) socket.write(response);
+                        // latin1: one byte per character, so boot noise ('ÿ') goes out as 0xFF like the hardware's.
+                        if (!socket.destroyed) socket.write(response, 'latin1');
                         resolve();
                     }, delayMs);
                     timers.add(timer);
                 }),
         );
     };
+
+    // A persona that resets itself on connect prints its banner unprompted,
+    // boot noise in front (every TCP client is a fresh power-up).
+    const persona = engine.adapter;
+    if (persona.resetsOnConnect) {
+        const resetMs = persona.resetLatencyMs ?? persona.atLatencyMs ?? persona.baseLatencyMs;
+        reply(`${persona.bootNoise ?? ''}${engine.resetAdapter()}`, Math.round(resetMs * options.latencyScale));
+    }
 
     socket.on('data', (data) => {
         buffer += data.toString('ascii');

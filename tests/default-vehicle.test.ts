@@ -73,16 +73,24 @@ describe('default gasoline vehicle — identity', () => {
         expect(word('01A6 1') / 10).toBeCloseTo(TRAITS.odometerKm ?? 0, 0);
     });
 
-    it('vLinker: an unhinted batch returns after ≈ 86 ms with ATST19, a hinted one after ≈ 30 (adaptive timing)', () => {
+    it('vLinker: an unhinted batch returns after ≈ 86 ms with ATST19 once adaptive timing has learned, a hinted one after ≈ 30', () => {
         // Recorded on the vLinker FD: 133 000 unhinted batches, median 86 ms (p10 71, p90 97); hinted 31 ms.
+        // Right after a reset the first unhinted request sits through the whole window (0100: 148 ms), the next ones converge.
         const engine = createSimulator('default-gasoline', {now: () => 60_000, seed: 7, adapter: VLINKER_FD_ADAPTER});
         for (const command of ['ATE0', 'ATL0', 'ATS0', 'ATST19', 'ATSP7']) engine.handleCommand(command);
+        expect(engine.execute('0100').latency.waitMs).toBe(100);
+        expect(engine.execute('010C5E0D').latency.waitMs).toBe(78);
+        for (let i = 0; i < 6; i++) engine.execute('010C5E0D');
         const batch = engine.execute('010C5E0D').latency;
         expect(batch.waitMs).toBe(55);
         expect(batch.totalMs).toBeGreaterThan(75);
         expect(batch.totalMs).toBeLessThan(95);
         expect(engine.execute('010C5E 1').latency.waitMs).toBe(0);
         engine.handleCommand('ATAT0');
+        expect(engine.execute('010C5E0D').latency.waitMs).toBe(100);
+        // A protocol change forgets what was learned.
+        engine.handleCommand('ATAT1');
+        engine.handleCommand('ATSP7');
         expect(engine.execute('010C5E0D').latency.waitMs).toBe(100);
     });
 
@@ -167,6 +175,21 @@ describe('default gasoline vehicle — driving', () => {
         expect(model.value(0x0d, 900 + 120, noJitter)).toBe(CYCLE.speedKmh[120]);
     });
 
+    it('coasts with the engine stopped, as the car does on 8 % of its moving time', () => {
+        const coasting = CYCLE.speedKmh.map((speed, second) => speed >= 1 && (CYCLE.rpm[second] ?? 0) < 300);
+        const seconds = coasting.filter(Boolean).length;
+        const episodes = coasting.filter((now, second) => now && !coasting[second - 1]).length;
+        expect(seconds).toBeGreaterThan(30);
+        expect(seconds).toBeLessThan(120);
+        expect(episodes).toBeGreaterThan(5);
+        // The first seconds of an episode average the spin-down; pick one with the engine fully stopped.
+        const second = CYCLE.rpm.findIndex((rpm, index) => rpm === 0 && (CYCLE.speedKmh[index] ?? 0) >= 1);
+        expect(model.value(0x0c, second, noJitter)).toBe(0);
+        expect(model.value(0x5e, second, noJitter)).toBe(0);
+        expect(model.value(0x44, second, noJitter)).toBeCloseTo(1.99997, 4);
+        expect(model.value(0x42, second, noJitter)).toBe(SIGNALS[0x42]?.base); // still charging
+    });
+
     it('stays within what a passenger car does', () => {
         expect(Math.max(...CYCLE.speedKmh)).toBeGreaterThan(60);
         expect(Math.max(...CYCLE.speedKmh)).toBeLessThan(140);
@@ -181,20 +204,20 @@ describe('default gasoline vehicle — driving', () => {
             coolantTargetC: 93,
             chargingVoltage: 13.9,
             longTermFuelTrimPct: -5.5,
-            intakeTempC: 41,
+            intakeTempC: 40,
             // Where the latest recording left the car.
-            odometerKm: 51220.9,
-            fuelLevelPct: 79,
-            warmupsSinceClear: 84,
-            distanceSinceClearKm: 2904,
-            // From the 22 sessions that began with a cold engine.
-            coolantStartC: 46,
-            coolantWarmupTauS: 160,
+            odometerKm: 51629.4,
+            fuelLevelPct: 34,
+            warmupsSinceClear: 100,
+            distanceSinceClearKm: 3317,
+            // From the sessions that began with a cold engine; τ brought to the reference heat (1500 rpm, 30 % load).
+            coolantStartC: 47,
+            coolantWarmupTauS: 141,
             oilOverCoolantC: 4,
             // The fitted ambient sensor at the reference cruise state.
             ambientC: 30.4,
         });
-        expect(model.value(0x05, 0, noJitter)).toBe(46);
+        expect(model.value(0x05, 0, noJitter)).toBe(47);
         expect(model.value(0x5c, 100_000, noJitter)).toBeCloseTo(97, 3);
         const warm = model.value(0x05, 100_000, noJitter) ?? 0; // the thermostat swings ±4–7 °C around the target with the drive
         expect(warm).toBeGreaterThan(88);

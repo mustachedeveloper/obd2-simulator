@@ -28,7 +28,7 @@ describe('MemoryLink', () => {
         const pending = collectUntilPrompt(link);
         await link.write('ATZ');
         const response = await pending;
-        expect(response).toBe('ATZ\r\rELM327 v1.5\r\r>');
+        expect(response).toBe('ATZ\r\r\rELM327 v1.5\r\r>');
         await link.disconnect();
     });
 
@@ -106,6 +106,11 @@ describe('MemoryLink timing and history', () => {
         const connecting = link.connect();
         await vi.advanceTimersByTimeAsync(1);
         await connecting;
+        // The vLinker resets itself on connect: its banner, boot noise first, 1.2 s later.
+        const powerUp = collectUntilPrompt(link);
+        await vi.advanceTimersByTimeAsync(1300);
+        expect(await powerUp).toBe('\u00ff\u0000\r\rELM327 v2.3\r\r>');
+        expect(link.history).toHaveLength(0);
         const pending = collectUntilPrompt(link);
         await link.write('ATI');
         await vi.advanceTimersByTimeAsync(100);

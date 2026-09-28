@@ -55,7 +55,7 @@ describe('personaFromWireLog', () => {
     it('produces a persona the engine accepts', () => {
         const persona = personaFromWireLog(fixture('vlinker-v2.3'), {name: 'x'});
         const engine = new SimulatorEngine({adapter: persona, now: () => 0});
-        expect(engine.handleCommand('ATZ')).toBe('ATZ\r\rELM327 v2.3');
+        expect(engine.handleCommand('ATZ')).toBe('ATZ\r\r\rELM327 v2.3');
     });
 });
 

@@ -144,6 +144,17 @@ export interface VehicleProfile {
      */
     transmissionPid?: 'ratio' | 'gear';
     /**
+     * How long the engine ECU stays awake after the engine stops, rejecting
+     * every request with 7F xx 22 while the other modules are already
+     * silent — what `setIgnition('off')` uses when given no `afterRunMs`.
+     * Every recording of the recorded car shows the phase (66 engine
+     * stops, never a straight NO DATA); how long it lasts depends on when
+     * the car goes to sleep: the importer stores the longest phase seen to
+     * end (145 s), one recording was still rejecting after 17 minutes.
+     * Default 0.
+     */
+    afterRunMs?: number;
+    /**
      * The engine ECU's address on a 29-bit bus (see
      * `EcuProfile.sourceAddress`); default 0x10.
      */
@@ -180,10 +191,9 @@ export interface SetIgnitionOptions {
      * Only with 'off': how long the engine ECU stays awake after the engine
      * stopped. Until then it rejects every request with 7F xx 22 (conditions
      * not correct) while the other ECUs are already silent; afterwards NO
-     * DATA. Every recording of the car shows at least 10 s of rejections —
-     * the app gives up after 15 failed polls, so the phase's real length is
-     * unknown. Default 0 — asleep at once. Not part of a snapshot: restore()
-     * lands after the phase.
+     * DATA. Default: the vehicle's `VehicleProfile.afterRunMs` (0 — asleep
+     * at once — for a profile without one). Not part of a snapshot:
+     * restore() lands after the phase.
      */
     afterRunMs?: number;
 }
@@ -385,6 +395,34 @@ export interface AdapterPersona {
      * with an uncalibrated divider (one clone reads 1.6 V high). Default 0.
      */
     voltageOffsetV?: number;
+    /**
+     * Latency of ATCS when it differs from other AT commands: the vLinkers
+     * sample the bus for ≈ 430 ms before printing the counters. Default:
+     * the AT latency.
+     */
+    canStatusLatencyMs?: number;
+    /**
+     * true → connecting resets the adapter like a power-up: after
+     * `resetLatencyMs` the banner shows up on the wire unprompted, with
+     * `bootNoise` in front of it on a link's first connection. Seen on the
+     * vLinker over BLE: an app that sends ATZ right after connecting takes
+     * that banner for the reply. Default false.
+     */
+    resetsOnConnect?: boolean;
+    /**
+     * true → bytes that arrive while a reset runs (ATZ, ATWS or the connect
+     * reset) are discarded: never executed, never answered. Seen on the
+     * vLinker: an ATE0 sent during a real ATZ is lost and the echo stays
+     * on. Honoured by interruptible links, which know what is in flight;
+     * queued transports answer every command. Default false.
+     */
+    dropsInputDuringReset?: boolean;
+    /**
+     * Junk the adapter's UART emits in front of its power-up banner ('ÿ\0'
+     * on the vLinker), printed once per link, on the first connection.
+     * Default none.
+     */
+    bootNoise?: string;
 }
 
 export type AdaptiveTimingMode = 0 | 1 | 2;
@@ -412,6 +450,13 @@ export interface LinkState {
      */
     timeoutHex: string;
     adaptiveTiming: AdaptiveTimingMode;
+    /**
+     * OBD requests that sat through the wait window since the last reset or
+     * protocol change: what adaptive timing (AT1) has learned from. The
+     * first waits the whole window, later ones converge on the persona's
+     * `adaptiveTimingFactor`.
+     */
+    adaptiveSamples: number;
     /**
      * ATCRA hhh — only that ECU's responses are printed; null → all.
      */

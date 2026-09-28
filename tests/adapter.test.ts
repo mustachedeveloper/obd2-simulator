@@ -7,6 +7,7 @@ import {
     SimulatorEngine,
     STN_ADAPTER,
     VLINKER_ADAPTER,
+    VLINKER_FD_ADAPTER,
 } from '../src/index';
 import type {AdapterPersona, DrivingModel, VehicleProfile} from '../src/index';
 import {SYNTHETIC_GASOLINE_PROFILE} from './helpers/synthetic';
@@ -65,7 +66,7 @@ describe('AT command recognition', () => {
         const engine = engineWith();
         expect(engine.handleCommand('ATI')).toBe('ELM327 v1.5');
         // Warm start resets echo (like ATZ); it applies from the next command.
-        expect(engine.handleCommand('ATWS')).toBe('\rELM327 v1.5');
+        expect(engine.handleCommand('ATWS')).toBe('\r\rELM327 v1.5');
         expect(engine.handleCommand('ATE0')).toBe('ATE0\rOK');
         expect(engine.handleCommand('AT@1')).toBe('OBDII to RS232 Interpreter');
         expect(engine.handleCommand('AT@2')).toBe('?');
@@ -75,7 +76,7 @@ describe('AT command recognition', () => {
 
     it('answers STN identity only on STN personas', () => {
         const stn = engineWith(STN_ADAPTER);
-        expect(stn.handleCommand('ATZ')).toBe('\rELM327 v1.4b');
+        expect(stn.handleCommand('ATZ')).toBe('\r\rELM327 v1.4b');
         stn.handleCommand('ATE0');
         expect(stn.handleCommand('STI')).toBe(STN_ADAPTER.stn?.firmware);
         expect(stn.handleCommand('STDI')).toBe(STN_ADAPTER.stn?.deviceId);
@@ -327,7 +328,7 @@ describe('persona switching', () => {
         expect(engine.adapter.baseLatencyMs).toBe(468);
         expect(engine.execute('010C 1').latency.baseMs).toBe(468);
         engine.setAdapter(VLINKER_ADAPTER);
-        expect(engine.handleCommand('ATZ')).toBe('\rELM327 v2.3');
+        expect(engine.handleCommand('ATZ')).toBe('\r\rELM327 v2.3');
     });
 
     it('rejects additional ECUs outside the 7E9..7EF response id range', () => {
@@ -337,12 +338,24 @@ describe('persona switching', () => {
 
     it('keeps the default persona identical to the pre-persona behaviour', () => {
         const engine = new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE});
-        expect(engine.handleCommand('ATZ')).toBe('ATZ\r\rELM327 v1.5');
+        expect(engine.handleCommand('ATZ')).toBe('ATZ\r\r\rELM327 v1.5');
         expect(engine.handleCommand('ATE0')).toBe('ATE0\rOK');
         expect(engine.handleCommand('ATL0')).toBe('OK');
         expect(engine.handleCommand('ATSP0')).toBe('OK');
         expect(engine.handleCommand('ATDPN')).toBe('A6');
         expect(lines(engine.handleCommand('010C'))).toHaveLength(1);
         expect(engine.adapter).toBe(DEFAULT_ADAPTER);
+    });
+});
+
+describe('ATCS latency', () => {
+    it('takes the 434 ms the vLinkers spend sampling the bus, other AT commands their usual time', () => {
+        for (const adapter of [VLINKER_ADAPTER, VLINKER_FD_ADAPTER]) {
+            const engine = new SimulatorEngine({now: () => 0, adapter: {...adapter, latencyJitterMs: 0}});
+            expect(engine.execute('ATCS').latency.totalMs, adapter.name).toBe(434);
+            expect(engine.execute('ATIGN').latency.totalMs, adapter.name).toBe(adapter.baseLatencyMs);
+        }
+        const plain = new SimulatorEngine({now: () => 0, adapter: {...GENUINE_ELM_ADAPTER, latencyJitterMs: 0}});
+        expect(plain.execute('ATCS').latency.totalMs).toBe(plain.execute('ATIGN').latency.totalMs);
     });
 });

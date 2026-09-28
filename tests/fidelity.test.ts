@@ -49,10 +49,10 @@ describe('prompt and line framing', () => {
         expect(engine.execute('010c 1').response).toMatch(/^410C/);
     });
 
-    it('prints a blank line before the reset banner, with the persona prefix quirk', () => {
-        expect(engineWith().handleCommand('ATZ')).toBe('\rELM327 v1.5');
+    it('prints two blank lines before the reset banner, with the persona prefix quirk', () => {
+        expect(engineWith().handleCommand('ATZ')).toBe('\r\rELM327 v1.5');
         expect(engineWith(CLONE_V21_ADAPTER).handleCommand('ATZ')).toBe('OKELM327 v2.1');
-        expect(engineWith(VLINKER_ADAPTER).handleCommand('ATWS')).toBe('\rELM327 v2.3');
+        expect(engineWith(VLINKER_ADAPTER).handleCommand('ATWS')).toBe('\r\rELM327 v2.3');
     });
 });
 

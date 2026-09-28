@@ -12,6 +12,7 @@ import {
 } from '../src/index';
 import type {AdapterPersona} from '../src/index';
 import {applyControlCommand} from '../src/node/control';
+import {SYNTHETIC_GASOLINE_PROFILE} from './helpers/synthetic';
 
 // Behaviour read off the real-vehicle recordings (110 sessions, four
 // adapters): the engine ECU's after-run phase, the vLinker's frame-counting
@@ -63,16 +64,20 @@ describe('engine after-run phase', () => {
         expect(engine.handleCommand('010C')).toBe('NO DATA');
     });
 
-    it('stays instant without the option and ends when the ignition changes again', () => {
+    it('takes the phase from the profile without the option (145 s on the recorded car), instant with 0 or without one', () => {
         const {engine} = recordedCar();
+        expect(GASOLINE_PROFILE.afterRunMs).toBe(145_000); // the longest phase a recording saw end
         engine.setIgnition('off');
+        expect(engine.handleCommand('010C 1')).toBe('7F0122');
+        engine.setIgnition('off', {afterRunMs: 0});
         expect(engine.handleCommand('010C 1')).toBe('NO DATA');
         engine.setIgnition('off', {afterRunMs: 60_000});
         engine.setIgnition('running');
         expect(engine.handleCommand('010C 1')).toMatch(/^410C/);
-        engine.setIgnition('off', {afterRunMs: 60_000});
-        engine.setIgnition('off');
-        expect(engine.handleCommand('010C 1')).toBe('NO DATA');
+        const synthetic = new SimulatorEngine({now: () => 0, profile: SYNTHETIC_GASOLINE_PROFILE});
+        synthetic.handleCommand('ATE0');
+        synthetic.setIgnition('off');
+        expect(synthetic.handleCommand('010C 1')).toBe('NO DATA');
     });
 
     it('validates the option and drops the phase on restore', () => {
@@ -220,7 +225,7 @@ describe('the padding-printing clone (BLE name OBDII)', () => {
         expect(engine.handleCommand('ATCS')).toBe('R:00');
         expect(engine.handleCommand('ATIGN')).toBe('ON');
         expect(engine.handleCommand('STI')).toBe('?');
-        expect(engine.handleCommand('ATZ')).toBe('\rELM327 v2.1');
+        expect(engine.handleCommand('ATZ')).toBe('\r\rELM327 v2.1');
     });
 });
 
@@ -254,7 +259,7 @@ describe('adapter details from the probe sessions', () => {
         engine.handleCommand('ATSP0');
         const found = engine.execute('0100').latency;
         expect(found.searchMs).toBe(4850);
-        engine.setIgnition('off');
+        engine.setIgnition('off', {afterRunMs: 0}); // asleep: nobody answers the probe
         engine.handleCommand('ATSP0');
         expect(engine.execute('0100').latency.searchMs).toBe(5700);
     });

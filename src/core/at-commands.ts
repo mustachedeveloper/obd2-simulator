@@ -52,6 +52,7 @@ export function resetLinkState(persona: AdapterPersona): LinkState {
         searched: false,
         timeoutHex: persona.defaultTimeoutHex ?? ELM_DEFAULT_TIMEOUT_HEX,
         adaptiveTiming: 1,
+        adaptiveSamples: 0,
         receiveFilter: null,
         requestHeader: FUNCTIONAL_REQUEST_HEADER,
         protocol: AUTO_PROTOCOL,
@@ -64,11 +65,12 @@ const ok = (state: LinkState): AtOutcome => ({lines: ['OK'], state});
 const unknown = (state: LinkState): AtOutcome => ({lines: ['?'], state});
 const say = (text: string, state: LinkState): AtOutcome => ({lines: [text], state});
 
-// Reset banner: genuine parts print a blank line first; some clones glue
-// junk ('OK') in front of the version string instead.
+// Reset banner: genuine parts (and the vLinkers, the OBDII clone) print
+// two blank lines first — every recording shows 'ATZ\r\r\rELM327 v2.3';
+// some clones glue junk ('OK') in front of the version string instead.
 export function bannerLines(persona: AdapterPersona): string[] {
     const banner = `${persona.bannerPrefix ?? ''}${persona.banner}`;
-    return (persona.bannerBlankLine ?? true) ? ['', banner] : [banner];
+    return (persona.bannerBlankLine ?? true) ? ['', '', banner] : [banner];
 }
 
 function describeProtocol(state: LinkState, vehicleProtocol: CanProtocol): string {
@@ -109,7 +111,7 @@ export function handleAtCommand(command: string, context: AtContext): AtOutcome 
         case 'ATCRA':
             return ok({...state, receiveFilter: null});
         case 'ATPC':
-            return ok({...state, searched: false});
+            return ok({...state, searched: false, adaptiveSamples: 0});
         case 'ATRV':
             return say(context.voltage(), state);
         case 'ATDP':
@@ -137,7 +139,7 @@ function handleParameterized(command: string, context: AtContext): AtOutcome {
     const adaptive = /^ATAT([012])$/.exec(command);
     if (adaptive) return ok({...state, adaptiveTiming: Number.parseInt(adaptive[1] ?? '1', 10) as AdaptiveTimingMode});
     const protocol = /^ATSP([0-9A-C])$/.exec(command);
-    if (protocol) return ok({...state, protocol: protocol[1] ?? AUTO_PROTOCOL, searched: false});
+    if (protocol) return ok({...state, protocol: protocol[1] ?? AUTO_PROTOCOL, searched: false, adaptiveSamples: 0});
     const header = /^ATSH([0-9A-F]{3}|[0-9A-F]{6}|[0-9A-F]{8})$/.exec(command);
     if (header) return ok({...state, requestHeader: header[1] ?? state.requestHeader});
     const filter = /^ATCRA([0-9A-F]{3}|[0-9A-F]{8})$/.exec(command);

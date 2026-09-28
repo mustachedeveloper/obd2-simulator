@@ -9,6 +9,7 @@ import {ecuPayloads, requestOf} from './responses';
 import {type Session, readSession} from './session';
 import {fitSignals} from './signals';
 import {ambientTrait, deriveTraits, deriveWarmup} from './traits';
+import {afterRunMs} from './after-run';
 
 // Dev-only tool (never published): turns a directory of AutoPulse wire logs
 // into the generated modules of one simulated vehicle.
@@ -117,21 +118,15 @@ function run(options: Options): void {
     const samples = sessions.flatMap((session) => session.samples);
 
     const identity = buildIdentity(exchanges, {name: options.name, vinSerial: options.vinSerial});
-    const {signals, diagnosis} = fitSignals(
-        sessions.map((session) => withDecodedSamples(session.samples, session.exchanges)),
-        identity.profile.pids,
-    );
+    const decoded = sessions.map((session) => withDecodedSamples(session.samples, session.exchanges));
+    const {signals, diagnosis} = fitSignals(decoded, identity.profile.pids);
     const measured = deriveTraits(samples);
     const traits = {
         ...measured,
-        ...(measured.coolantTargetC === undefined
-            ? {}
-            : deriveWarmup(
-                  sessions.map((session) => session.samples),
-                  measured.coolantTargetC,
-              )),
+        ...(measured.coolantTargetC === undefined ? {} : deriveWarmup(decoded, measured.coolantTargetC)),
         ...ambientTrait(signals, samples),
     };
+    // The app logs every channel it polls, so its samples hold what the wire holds; throttle and load are polled only while on display.
     const cycle = buildCycle(
         sessions.map((session) => toSeries(session.samples)),
         {seconds: options.cycleSeconds, minTopSpeedKmh: options.minTopSpeedKmh},
@@ -146,8 +141,10 @@ function run(options: Options): void {
     };
 
     const secrets = [...identity.secrets, ...sessions.flatMap((session) => session.secrets)];
+    const afterRun = afterRunMs(sessions);
+    const profile = afterRun === undefined ? identity.profile : {...identity.profile, afterRunMs: afterRun};
     const modules = {
-        'profile.ts': renderProfileModule(identity.profile, provenance),
+        'profile.ts': renderProfileModule(profile, provenance),
         'driving.ts': renderDrivingModule(cycle, traits, signals),
     };
     for (const source of Object.values(modules)) assertNoLeak(source, secrets);
@@ -171,6 +168,8 @@ function run(options: Options): void {
         );
     }
     console.log(`traits: ${JSON.stringify(traits)}`);
+    if (afterRun !== undefined)
+        console.log(`after-run: the engine ECU kept rejecting for up to ${afterRun / 1000} s after the engine stopped`);
     const fittedPids = Object.keys(signals).map(Number);
     const sloped = fittedPids.filter((pid) => {
         const fit = signals[pid];
@@ -178,7 +177,9 @@ function run(options: Options): void {
     });
     for (const line of diagnosis) {
         const explained = line.rSquared === null ? '   —' : line.rSquared.toFixed(2);
-        console.log(`  PID ${hexPids([line.pid])}  n=${String(line.samples).padStart(6)}  R²=${explained}  → ${line.outcome}`);
+        console.log(
+            `  PID ${hexPids([line.pid])}  n=${String(line.samples).padStart(6)} in ${String(line.sessions).padStart(3)} sessions  R²=${explained}  → ${line.outcome}`,
+        );
     }
     console.log(`signals: ${fittedPids.length} fitted (${hexPids(sloped)} follow the driving state, the rest are constants)`);
     const standstill = cycle.speedKmh.filter((speed) => speed < 1).length / cycle.speedKmh.length;

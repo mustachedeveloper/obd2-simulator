@@ -61,18 +61,27 @@ export interface CommandLogEntry {
     response: string;
     latencyMs: number;
     at: number;
+    /**
+     * true → the adapter discarded the command (it arrived during a reset
+     * on a persona with `dropsInputDuringReset`): no bytes came back.
+     */
+    dropped?: boolean;
 }
 
 // A command whose response is still on its way (interruptible links only).
 interface Flight {
     result: CommandResult;
-    entry: CommandLogEntry;
+    // null for the reset a connection triggers: it is not an exchange.
+    entry: CommandLogEntry | null;
     timers: readonly ReturnType<typeof setTimeout>[];
     // What already reached the app ('SEARCHING...'), without line ending.
     emitted: string;
+    // A reset (ATZ / ATWS / connect): input during it is lost on some adapters.
+    reset: boolean;
 }
 
 const SEARCHING = 'SEARCHING...';
+const RESET_COMMANDS: ReadonlySet<string> = new Set(['ATZ', 'ATWS']);
 const DEFAULT_CONNECT_DELAY_MS = 150;
 const DEFAULT_CHUNK_SPLIT_THRESHOLD = 6;
 const DEFAULT_HISTORY_LIMIT = 500;
@@ -102,6 +111,8 @@ export class MemoryLink {
     private session = 0;
     private corruptions: LinkCorruption[] = [];
     private flight: Flight | null = null;
+    // The boot noise is a power-up artefact: printed on the first connection only.
+    private firstConnection = true;
 
     constructor(engine: SimulatorEngine, options: MemoryLinkOptions = {}) {
         this.engine = engine;
@@ -161,6 +172,40 @@ export class MemoryLink {
         this.setStatus('connecting');
         await this.delay(this.connectDelayMs);
         this.setStatus('connected');
+        if (this.engine.adapter.resetsOnConnect) this.powerUp();
+    }
+
+    // The adapter resets itself as the client connects (persona.resetsOnConnect):
+    // the banner arrives unprompted after the reset time, boot noise in front
+    // of it the first time. On an interruptible link the reset is in flight
+    // meanwhile — a command sent into it is lost when the persona drops input
+    // during resets, aborted (STOPPED) otherwise; a queued link answers it after
+    // the banner.
+    private powerUp(): void {
+        const persona = this.engine.adapter;
+        const noise = this.firstConnection ? (persona.bootNoise ?? '') : '';
+        this.firstConnection = false;
+        const wire = `${noise}${this.engine.resetAdapter()}`;
+        const delayMs = persona.resetLatencyMs ?? persona.atLatencyMs ?? persona.baseLatencyMs;
+        if (!this.interruptible) {
+            const session = this.session;
+            this.tail = this.tail.then(
+                async () => {
+                    if (session !== this.session) return;
+                    await this.delay(delayMs);
+                    if (session === this.session) this.emit(wire);
+                },
+                () => undefined,
+            );
+            this.tail.catch(() => undefined);
+            return;
+        }
+        const latency = {baseMs: delayMs, jitterMs: 0, waitMs: 0, searchMs: 0, totalMs: delayMs};
+        const result: CommandResult = {command: 'ATZ', response: wire.slice(noise.length), wire, latency, silent: false};
+        const timer = this.emitLater(wire, delayMs, () => {
+            this.flight = null;
+        });
+        this.flight = {result, entry: null, timers: [timer], emitted: '', reset: true};
     }
 
     async disconnect(): Promise<void> {
@@ -206,9 +251,15 @@ export class MemoryLink {
         this.tail.catch(() => undefined);
     }
 
-    // The hardware's way: bytes arriving while a command runs abort it.
+    // The hardware's way: bytes arriving while a command runs abort it — or,
+    // during a reset on a persona that drops them, vanish.
     private writeInterruptible(data: string): void {
         const aborted = this.flight;
+        if (aborted?.reset && this.engine.adapter.dropsInputDuringReset) {
+            const command = data.replace(/\s+/g, '').toUpperCase();
+            this.record({command, response: '', latencyMs: 0, at: Date.now(), dropped: true});
+            return;
+        }
         if (aborted) {
             for (const timer of aborted.timers) {
                 clearTimeout(timer);
@@ -236,7 +287,7 @@ export class MemoryLink {
                 this.flight = null;
             }),
         ];
-        this.flight = {result, entry, timers, emitted: ''};
+        this.flight = {result, entry, timers, emitted: '', reset: RESET_COMMANDS.has(result.command)};
     }
 
     private markEmitted(text: string): void {

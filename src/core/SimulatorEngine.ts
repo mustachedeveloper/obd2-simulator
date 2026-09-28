@@ -97,6 +97,7 @@ const STOPPED = 'STOPPED';
 // How long the vLinker took to print STOPPED after a search was cut short.
 const SEARCH_ABORT_MS = 670;
 const RESET_COMMANDS: ReadonlySet<string> = new Set(['ATZ', 'ATWS']);
+const CAN_STATUS_COMMAND = 'ATCS';
 const SILENCE = {
     response: '',
     wire: '',
@@ -275,10 +276,12 @@ export class SimulatorEngine {
      * @throws if `afterRunMs` is negative, not finite, or given with a state other than 'off'.
      */
     setIgnition(state: IgnitionState, options: SetIgnitionOptions = {}): void {
-        const afterRunMs = options.afterRunMs ?? 0;
-        if (!Number.isFinite(afterRunMs) || afterRunMs < 0)
-            throw new Error(`afterRunMs must be a non-negative number, got ${afterRunMs}`);
-        if (afterRunMs > 0 && state !== 'off') throw new Error(`afterRunMs only applies to ignition 'off', got '${state}'`);
+        const given = options.afterRunMs;
+        if (given !== undefined && (!Number.isFinite(given) || given < 0))
+            throw new Error(`afterRunMs must be a non-negative number, got ${given}`);
+        if (given !== undefined && given > 0 && state !== 'off')
+            throw new Error(`afterRunMs only applies to ignition 'off', got '${state}'`);
+        const afterRunMs = given ?? (state === 'off' ? (this.profile.afterRunMs ?? 0) : 0);
         this.ignitionState = state;
         this.afterRunUntil = afterRunMs > 0 ? this.now() + afterRunMs : null;
         this.logger.info?.(`ignition → ${state}${afterRunMs > 0 ? ` (after-run ${afterRunMs} ms)` : ''}`);
@@ -415,7 +418,8 @@ export class SimulatorEngine {
     }
 
     private latencyOf(command: string, outcome: Outcome): CommandResult['latency'] {
-        const waitMs = waitMsFor(outcome, this.link, this.persona);
+        // The wait is what the link knew when the request went out, before it learned from it.
+        const waitMs = waitMsFor(outcome, outcome.state, this.persona);
         const searchMs = outcome.searched ? this.searchMsFor(outcome) : 0;
         const baseMs = this.latencyFor ? this.latencyFor(command) : this.baseMsFor(command, outcome);
         const jitterMs =
@@ -430,8 +434,14 @@ export class SimulatorEngine {
     }
 
     private baseMsFor(command: string, outcome: Outcome): number {
-        const {baseLatencyMs, atLatencyMs = baseLatencyMs, resetLatencyMs = atLatencyMs} = this.persona;
+        const {
+            baseLatencyMs,
+            atLatencyMs = baseLatencyMs,
+            resetLatencyMs = atLatencyMs,
+            canStatusLatencyMs = atLatencyMs,
+        } = this.persona;
         if (RESET_COMMANDS.has(command)) return resetLatencyMs;
+        if (command === CAN_STATUS_COMMAND) return canStatusLatencyMs;
         return outcome.kind === 'at' ? atLatencyMs : baseLatencyMs;
     }
 
@@ -439,7 +449,9 @@ export class SimulatorEngine {
     // place state changes (AT settings, protocol search) land.
     private respond(command: string): Outcome {
         const outcome = this.outcomeOf(command);
-        this.link = outcome.state;
+        // A request that sat through the wait window teaches adaptive timing.
+        const learned = outcome.kind === 'obd' && outcome.responders > 0 && waitMsFor(outcome, outcome.state, this.persona) > 0;
+        this.link = learned ? {...outcome.state, adaptiveSamples: outcome.state.adaptiveSamples + 1} : outcome.state;
         return outcome;
     }
 

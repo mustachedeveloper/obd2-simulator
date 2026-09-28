@@ -133,6 +133,7 @@ describe('public API surface', () => {
             | 'clearRequiresEngineOff'
             | 'transmissionPid'
             | 'sourceAddress'
+            | 'afterRunMs'
         >();
         expectTypeOf<keyof AdapterPersona>().toEqualTypeOf<
             | 'name'
@@ -161,6 +162,10 @@ describe('public API surface', () => {
             | 'atLatencyMs'
             | 'resetLatencyMs'
             | 'voltageOffsetV'
+            | 'canStatusLatencyMs'
+            | 'resetsOnConnect'
+            | 'dropsInputDuringReset'
+            | 'bootNoise'
         >();
         expectTypeOf<keyof EcuProfile>().toEqualTypeOf<
             'id' | 'sourceAddress' | 'name' | 'pids' | 'readiness' | 'calibrationId' | 'cvn' | 'dtcReply' | 'clearReply'

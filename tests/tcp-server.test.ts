@@ -1,6 +1,6 @@
 import {createConnection} from 'node:net';
 import {describe, expect, it} from 'vitest';
-import {CLONE_V21_ADAPTER, SimulatorEngine} from '../src/index';
+import {CLONE_V21_ADAPTER, SimulatorEngine, VLINKER_ADAPTER} from '../src/index';
 import {createTcpServer} from '../src/node/index';
 import {SYNTHETIC_GASOLINE_PROFILE} from './helpers/synthetic';
 
@@ -35,6 +35,27 @@ describe('TCP server', () => {
         expect(prompts[1]).toBe('ATE0\rOK');
         expect(prompts[3]).toMatch(/^SEARCHING\.\.\.\r41 0C /); // auto protocol: the clone searches first, prints spaces
         expect(prompts[4]).toMatch(/V$/);
+        socket.destroy();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    it('prints the connect banner of a persona that resets itself on connect, boot noise first', async () => {
+        const {server, port} = await listen({
+            engineFactory: () =>
+                new SimulatorEngine({now: () => 0, adapter: VLINKER_ADAPTER, profile: SYNTHETIC_GASOLINE_PROFILE}),
+            latencyScale: 0.1,
+        });
+        const socket = createConnection({port, host: '127.0.0.1'});
+        let received = '';
+        socket.on('data', (chunk) => (received += chunk.toString('ascii')));
+        await new Promise<void>((resolve) => socket.on('connect', () => resolve()));
+        socket.setEncoding('latin1');
+        socket.write('ATZ\r');
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(received).toBe(''); // the reset takes 1.2 s (× 0.1 here)
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        // The banner comes first; on a queued transport the ATZ is answered after it.
+        expect(received).toBe('\u00ff\u0000\r\rELM327 v2.3\r\r>ATZ\r\r\rELM327 v2.3\r\r>');
         socket.destroy();
         await new Promise<void>((resolve) => server.close(() => resolve()));
     });

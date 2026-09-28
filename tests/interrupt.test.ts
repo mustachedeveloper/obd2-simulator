@@ -1,5 +1,5 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {MemoryLink, VLINKER_ADAPTER, createSimulator} from '../src/index';
+import {DEFAULT_ADAPTER, MemoryLink, VLINKER_ADAPTER, VLINKER_FD_ADAPTER, createSimulator} from '../src/index';
 
 // Recorded on the vLinker with the ignition off: the app gives up on
 // 'SEARCHING...' after 3 s and sends the next command; its bytes abort the
@@ -15,6 +15,8 @@ async function linked(options: ConstructorParameters<typeof MemoryLink>[1] = {})
     const connecting = link.connect();
     await vi.advanceTimersByTimeAsync(1);
     await connecting;
+    // The vLinker resets itself on connect; a well-behaved app waits for the banner.
+    await vi.advanceTimersByTimeAsync(1300);
     for (const command of ['ATE0', 'ATS0', 'ATST19', 'ATSP0']) {
         await link.write(command);
         await vi.advanceTimersByTimeAsync(100);
@@ -22,6 +24,95 @@ async function linked(options: ConstructorParameters<typeof MemoryLink>[1] = {})
     chunks.length = 0;
     return {engine, link, chunks};
 }
+
+describe('MemoryLink — the vLinker resets itself on connect', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    async function connected(options: ConstructorParameters<typeof MemoryLink>[1] = {}) {
+        const engine = createSimulator('default-gasoline', {now: () => 0, seed: 7, adapter: calm});
+        const link = new MemoryLink(engine, {connectDelayMs: 0, chunkSplitThreshold: 1000, ...options});
+        const chunks: string[] = [];
+        link.onData((chunk) => chunks.push(chunk));
+        const connecting = link.connect();
+        await vi.advanceTimersByTimeAsync(1);
+        await connecting;
+        return {engine, link, chunks};
+    }
+
+    it('prints the banner unprompted 1.2 s after connecting, boot noise in front of it the first time only', async () => {
+        const {link, chunks} = await connected({interruptible: true});
+        await vi.advanceTimersByTimeAsync(1100);
+        expect(chunks).toEqual([]);
+        await vi.advanceTimersByTimeAsync(200);
+        expect(chunks.join('')).toBe('\u00ff\u0000\r\rELM327 v2.3\r\r>');
+        expect(link.history).toEqual([]);
+        await link.disconnect();
+        chunks.length = 0;
+        const again = link.connect();
+        await vi.advanceTimersByTimeAsync(1);
+        await again;
+        await vi.advanceTimersByTimeAsync(1300);
+        expect(chunks.join('')).toBe('\r\rELM327 v2.3\r\r>');
+    });
+
+    it('loses an ATZ sent into the connect reset: the app takes the banner for its reply (as recorded)', async () => {
+        const {link, chunks} = await connected({interruptible: true});
+        await vi.advanceTimersByTimeAsync(900);
+        await link.write('ATZ');
+        await vi.advanceTimersByTimeAsync(300);
+        expect(chunks.join('')).toBe('\u00ff\u0000\r\rELM327 v2.3\r\r>');
+        expect(link.history).toEqual([{command: 'ATZ', response: '', latencyMs: 0, at: expect.any(Number), dropped: true}]);
+        // Nothing else ever comes for it; the next command is answered normally, echo on as after any reset.
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(chunks.join('')).toBe('\u00ff\u0000\r\rELM327 v2.3\r\r>');
+        chunks.length = 0;
+        await link.write('ATE0');
+        await vi.advanceTimersByTimeAsync(100);
+        expect(chunks.join('')).toBe('ATE0\rOK\r\r>');
+    });
+
+    it('loses an ATE0 sent during a real ATZ, so the echo stays on for the session (as recorded)', async () => {
+        const {link, chunks} = await connected({interruptible: true});
+        await vi.advanceTimersByTimeAsync(1300);
+        chunks.length = 0;
+        await link.write('ATZ');
+        await vi.advanceTimersByTimeAsync(100);
+        await link.write('ATE0');
+        await vi.advanceTimersByTimeAsync(1200);
+        expect(chunks.join('')).toBe('ATZ\r\r\rELM327 v2.3\r\r>');
+        expect(link.history.map((entry) => [entry.command, entry.dropped ?? false])).toEqual([
+            ['ATZ', false],
+            ['ATE0', true],
+        ]);
+        chunks.length = 0;
+        await link.write('ATL0');
+        await vi.advanceTimersByTimeAsync(100);
+        expect(chunks.join('')).toBe('ATL0\rOK\r\r>');
+    });
+
+    it('answers a command sent into the connect reset after the banner on a queued link', async () => {
+        const {link, chunks} = await connected();
+        await link.write('ATZ');
+        await vi.advanceTimersByTimeAsync(1300);
+        expect(chunks.join('')).toBe('\u00ff\u0000\r\rELM327 v2.3\r\r>');
+        await vi.advanceTimersByTimeAsync(1300);
+        expect(chunks.join('')).toBe('\u00ff\u0000\r\rELM327 v2.3\r\r>ATZ\r\r\rELM327 v2.3\r\r>');
+    });
+
+    it('keeps the vLinker FD and the ideal adapter quiet on connect', async () => {
+        for (const adapter of [VLINKER_FD_ADAPTER, DEFAULT_ADAPTER]) {
+            const engine = createSimulator('default-gasoline', {now: () => 0, seed: 7, adapter});
+            const link = new MemoryLink(engine, {connectDelayMs: 0, interruptible: true});
+            const chunks: string[] = [];
+            link.onData((chunk) => chunks.push(chunk));
+            const connecting = link.connect();
+            await vi.advanceTimersByTimeAsync(2000);
+            await connecting;
+            expect(chunks, adapter.name).toEqual([]);
+        }
+    });
+});
 
 describe('MemoryLink — interruptible', () => {
     beforeEach(() => vi.useFakeTimers());

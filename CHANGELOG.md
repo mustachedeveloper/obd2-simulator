@@ -4,6 +4,82 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/) (0.x: minor versions may break).
 
+## [Unreleased]
+
+From the 2026-09-28 review of 15 new recordings (131 real sessions in
+all, two of them from an Android phone; every drive replays through the
+simulator with the recorded line structure on ≥ 99.99 % of exchanges).
+
+### Added
+
+- **Engine-off coasting.** The car shuts its engine while rolling (300
+  episodes in the new recordings, 2–20 s each, 8 % of the time on the move;
+  827 more in the older ones — never modelled before). A recorded cycle
+  with rpm 0 on the move now reads like the car: no rpm, no fuel, no air,
+  atmospheric manifold, commanded lambda full lean, the wide-band sensor at
+  stoichiometry, and the module voltage still at charging level (13.9–14.6 V
+  in every recording). The default vehicle's drive was re-cut to include 18
+  such episodes (69 s of 900): the importer now scores a window's coasting
+  share against the corpus, next to its standstill share and mean speed.
+  The trade-off is a drive with only 9 s of standstill (was 90): no 15-minute
+  stretch of the recordings holds both.
+- **The vLinker's connect reset.** `AdapterPersona.resetsOnConnect` (the
+  banner arrives unprompted `resetLatencyMs` after a connection, like a
+  power-up), `dropsInputDuringReset` (bytes that arrive while a reset runs
+  are discarded — `MemoryLink({interruptible: true})` records them with
+  `dropped: true` and answers nothing) and `bootNoise` (`ÿ\0` in front of
+  the first banner). All three on `VLINKER_ADAPTER`: in 10 of its 39
+  recordings the app's ATE0 fell into a running ATZ and the echo stayed on
+  for the whole session, and the app regularly takes the connect banner for
+  its ATZ reply. The TCP server prints the connect banner too.
+- `AdapterPersona.canStatusLatencyMs`: `ATCS` takes 434 ms on both vLinkers
+  (ten recordings, 432–453 ms).
+- **`VehicleProfile.afterRunMs`**: what `setIgnition('off')` uses when given
+  no `afterRunMs`. Every one of the 66 recorded engine stops shows the
+  engine ECU rejecting requests (`7F xx 22`) before it goes quiet; how long
+  depends on when the car goes to sleep. The importer stores the longest
+  phase a recording saw end — 145 s on the recorded car (one recording was
+  still rejecting after 17 minutes). Pass `{afterRunMs: 0}` for a car that
+  is already asleep. Profiles without the field keep the old instant
+  NO DATA.
+- **Adaptive timing learns.** `LinkState.adaptiveSamples`: after a reset or
+  protocol change the first request without a satisfied hint sits through
+  the whole ATST window, each later one halves what is left above the
+  persona's `adaptiveTimingFactor` — the recorded 148 → 118 → 91 → 87 ms
+  after `ATZ` on the vLinkers, where a fresh engine used to answer `0100`
+  in 87 ms.
+- The importer refuses to fit a channel logged in fewer than three
+  recordings (`FitOptions.minSessions`) and reports the count per PID.
+
+### Changed
+
+- **The warm-up follows the heat put in.** `traits.coolantWarmupTauS` is
+  now the time constant at a reference state (1500 rpm, 30 % load,
+  `WARMUP_REFERENCE_STATE`); the model scales it by the rpm × load produced
+  since power-on (`warmupTauScale`, τ ∝ heat^−0.8, 0.4 … 2.5 τ). The
+  recordings warm from 32 °C in 3.5 minutes on the motorway (τ ≈ 110 s)
+  and take three times as long idling in town (τ ≈ 300 s); one constant
+  could not do both. Oil follows the same scaled τ. The importer brings each
+  cold start's measured τ to the reference heat (the default vehicle: 141 s,
+  was 160 measured). Synthetic-cycle fingerprints moved (PIDs 03, 05, 3C,
+  3E, 5C, 67).
+- **The warm coolant follows the whole corpus.** 9 691 five-minute
+  windows over 100+ recordings put the thermostat's swing at −4.5 °C
+  standing to +2.7 °C at 80 km/h (was −4 … +7 from three sessions), and
+  show it cycling ± 2.5 °C about once a minute as it opens and closes
+  (1.8 °C rms, half-cycles of 25–38 s); the model now does both. The
+  correlation is with speed (0.47), not with load.
+- The default vehicle carries the car's latest state again (odometer
+  51 629 km, fuel 34 %, 100 warm-ups, 3 317 km since clear, +11 ignition
+  cycles) and two more fits (actual torque `62` sloped, IAT sensors `68`
+  constant); 118 sessions to 2026-09-28.
+
+### Fixed
+
+- The reset banner is preceded by two blank lines (`ATZ\r\r\rELM327
+  v2.3`), as every recording of every adapter and the ELM327 datasheet show;
+  it was one.
+
 ## [1.0.0] - 2026-09-23
 
 First stable release. From here on the public API follows semantic

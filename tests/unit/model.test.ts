@@ -1,5 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import {DefaultDrivingModel} from '../../src/core/DefaultDrivingModel';
+import {WARMUP_REFERENCE_STATE, warmupHeat, warmupTauScale} from '../../src/core/traits';
 import {mulberry32} from '../../src/core/prng';
 import {ADAPTIVE_TIMING_FACTORS, timeoutWindowMs, waitMsFor} from '../../src/core/timing';
 import {handleAtCommand, resetLinkState} from '../../src/core/at-commands';
@@ -96,6 +97,54 @@ describe('DefaultDrivingModel', () => {
         const justMoving = model.value(0x05, loop + 740, noJitter) ?? 0;
         expect(justMoving).toBeGreaterThan(standing);
         expect(justMoving).toBeLessThan(moving - 2);
+    });
+
+    it("warms up faster under load than idling, and at the trait's τ at the reference heat", () => {
+        const traits = {coolantStartC: 30, coolantTargetC: 93, coolantWarmupTauS: 160};
+        const constant = (rpm: number, load: number, speed: number) =>
+            new DefaultDrivingModel({
+                traits,
+                cycle: {
+                    stepSeconds: 60,
+                    speedKmh: [speed, speed],
+                    rpm: [rpm, rpm],
+                    throttlePct: [15, 15],
+                    engineLoadPct: [load, load],
+                },
+            });
+        const idling = constant(930, 22, 0);
+        const loaded = constant(1800, 35, 60);
+        const reference = constant(WARMUP_REFERENCE_STATE.rpm, WARMUP_REFERENCE_STATE.engineLoadPct, 0);
+        const coolant = (model: DefaultDrivingModel, seconds: number) => model.value(0x05, seconds, noJitter) ?? 0;
+        // Two minutes in: the loaded engine is well past halfway, the idling one has barely started.
+        expect(coolant(loaded, 120)).toBeGreaterThan(coolant(idling, 120) + 15);
+        // Idling: τ ≈ 1.9 × 160 s; loaded: ≈ 0.75 × 160 s (the recorded car's 300 s and 110 s).
+        const tauIdle = 160 * warmupTauScale(warmupHeat({rpm: 930, engineLoadPct: 22, speedKmh: 0, throttlePct: 15}));
+        const tauLoad = 160 * warmupTauScale(warmupHeat({rpm: 1800, engineLoadPct: 35, speedKmh: 60, throttlePct: 15}));
+        expect(tauIdle).toBeGreaterThan(280);
+        expect(tauIdle).toBeLessThan(320);
+        expect(tauLoad).toBeGreaterThan(110);
+        expect(tauLoad).toBeLessThan(130);
+        // The thermostat swing (−4.5 °C standing, +2.4 °C at 60 km/h) and its ±2.5 °C cycle scale with the warm-up too.
+        const expected = (tauS: number, swing: number, seconds: number) => {
+            const warmup = 1 - Math.exp(-seconds / tauS);
+            const cycle = 2.5 * Math.sin((2 * Math.PI * seconds) / 65);
+            return 30 + 63 * warmup + (swing + cycle) * warmup;
+        };
+        expect(coolant(idling, 120)).toBeCloseTo(expected(tauIdle, -4.5, 120), 6);
+        expect(coolant(loaded, 120)).toBeCloseTo(expected(tauLoad, 2.4, 120), 6);
+        // At the reference state the trait is used as it is.
+        expect(coolant(reference, 160)).toBeCloseTo(expected(160, -4.5, 160), 6);
+        // Oil follows the same scaled τ (× 1.6).
+        expect(idling.value(0x5c, 120, noJitter)).toBeCloseTo(30 + (93 + 8 - 30) * (1 - Math.exp(-120 / (tauIdle * 1.6))), 6);
+    });
+
+    it('bounds the warm-up scaling for a stopped or a flat-out engine', () => {
+        expect(warmupTauScale(0)).toBe(2.5);
+        expect(warmupTauScale(Number.NaN)).toBe(2.5);
+        expect(warmupTauScale(100)).toBe(0.4);
+        expect(warmupTauScale(warmupHeat(WARMUP_REFERENCE_STATE))).toBeCloseTo(1, 12);
+        expect(warmupTauScale(0.1)).toBeGreaterThan(warmupTauScale(0.2));
     });
 
     it('lags the exhaust-side temperatures behind a load step', () => {
@@ -195,9 +244,14 @@ describe('timing', () => {
     });
 
     it('lets a persona say how much of the window its adaptive timing (AT1) really waits', () => {
-        const state = resetLinkState(persona);
+        const state = {...resetLinkState(persona), adaptiveSamples: 20};
         const quick = {...persona, adaptiveTiming: true, adaptiveTimingFactor: 0.55};
         expect(timeoutWindowMs({...state, timeoutHex: '19', adaptiveTiming: 1}, quick)).toBe(55);
+        // AT1 learns: the whole window first, then halfway to the factor each time.
+        expect(timeoutWindowMs({...state, timeoutHex: '19', adaptiveTiming: 1, adaptiveSamples: 0}, quick)).toBe(100);
+        expect(timeoutWindowMs({...state, timeoutHex: '19', adaptiveTiming: 1, adaptiveSamples: 1}, quick)).toBe(78);
+        expect(timeoutWindowMs({...state, timeoutHex: '19', adaptiveTiming: 1, adaptiveSamples: 2}, quick)).toBe(66);
+        expect(timeoutWindowMs({...state, timeoutHex: '19', adaptiveTiming: 0, adaptiveSamples: 0}, quick)).toBe(100);
         expect(timeoutWindowMs({...state, timeoutHex: '19', adaptiveTiming: 2}, quick)).toBe(50); // AT2 keeps its own factor
         expect(timeoutWindowMs({...state, timeoutHex: '19', adaptiveTiming: 0}, quick)).toBe(100);
         expect(timeoutWindowMs({...state, timeoutHex: '19', adaptiveTiming: 1}, {...quick, adaptiveTiming: false})).toBe(100);

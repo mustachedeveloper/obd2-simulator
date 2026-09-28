@@ -36,16 +36,13 @@ export const DEFAULT_ADAPTER: AdapterPersona = {
     protocolSearchMs: null,
 };
 
-/**
- * Vgate vLinker (BLE name IOS-Vlink): honors the hint, so with '010C 1'
- * only the engine ECU is visible; without a hint every ECU prints. The hint
- * counts CAN frames — a hinted multi-frame answer stops after that many.
- * Its auto-protocol search on the reference car took 6.3 s (7.1 s with the
- * ignition off), a reset 1.2 s.
- */
-export const VLINKER_ADAPTER: AdapterPersona = {
-    name: 'vlinker',
-    banner: 'ELM327 v2.3',
+// Both Vgate vLinkers: honor the hint, count CAN frames with it, print
+// every ECU without one; an unhinted batch (engine ECU multi-frame + the
+// TCM's single frame) returns after ≈ 55 % of the ATST19 window — 86 ms
+// median in the recordings. Only 0100, where a third module answers late,
+// sits through the whole window on the hardware (148 ms). ATCS samples the
+// bus for 434 ms on both (ten recordings, 432–453 ms).
+const VGATE_ADAPTER: Omit<AdapterPersona, 'name' | 'banner'> = {
     description: ELM_DESCRIPTION,
     identifier: null,
     stn: null,
@@ -53,10 +50,6 @@ export const VLINKER_ADAPTER: AdapterPersona = {
     hintCountsFrames: true,
     batch: {supported: true, maxPids: 6, multiFrameClean: true},
     adaptiveTiming: true,
-    // Recorded with ATST19: an unhinted batch (engine ECU multi-frame + the
-    // TCM's single frame) returns after 86 ms median — base plus ≈ 55 % of
-    // the 100 ms window. Only 0100, where a third module answers late, sits
-    // through the whole window on the hardware (148 ms).
     adaptiveTimingFactor: 0.55,
     ignitionMonitor: true,
     baseLatencyMs: 32,
@@ -66,16 +59,38 @@ export const VLINKER_ADAPTER: AdapterPersona = {
     protocolSearchFailMs: 7100,
     resetLatencyMs: 1200,
     canStatus: 'T:00 R:00 F:0',
+    canStatusLatencyMs: 434,
     trimsRawSingleFrames: true,
+};
+
+/**
+ * Vgate vLinker (BLE name IOS-Vlink): honors the hint, so with '010C 1'
+ * only the engine ECU is visible; without a hint every ECU prints. The hint
+ * counts CAN frames — a hinted multi-frame answer stops after that many.
+ * Its auto-protocol search on the reference car took 6.3 s (7.1 s with the
+ * ignition off), a reset 1.2 s. Connecting resets it like a power-up: the
+ * banner arrives unprompted 1.2 s later (with `ÿ\0` in front of it when
+ * the adapter has just powered up), and whatever arrives during a reset is
+ * lost — in 10 of 39 recordings the app's ATE0 fell into its own ATZ and
+ * the echo stayed on for the whole session.
+ */
+export const VLINKER_ADAPTER: AdapterPersona = {
+    ...VGATE_ADAPTER,
+    name: 'vlinker',
+    banner: 'ELM327 v2.3',
+    resetsOnConnect: true,
+    dropsInputDuringReset: true,
+    bootNoise: '\u00ff\u0000',
 };
 
 /**
  * Vgate vLinker FD (BLE name "vLinker FD-IOS"): an STN1151 behind an
  * ELM327 v2.2 banner. Same hint handling and framing as the older vLinker,
- * a little quicker at everything.
+ * a little quicker at everything; none of its 58 recordings shows the
+ * connect reset or a lost command.
  */
 export const VLINKER_FD_ADAPTER: AdapterPersona = {
-    ...VLINKER_ADAPTER,
+    ...VGATE_ADAPTER,
     name: 'vlinker-fd',
     banner: 'ELM327 v2.2',
     // STDI was never recorded; the firmware string is.

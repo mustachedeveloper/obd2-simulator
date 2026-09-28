@@ -15,6 +15,13 @@ export interface VehicleTraits {
      */
     coolantStartC: number;
     coolantTargetC: number;
+    /**
+     * τ of the warm-up when the engine puts in the heat of
+     * {@link WARMUP_REFERENCE_STATE} (a gentle 1500 rpm at 30 % load). The
+     * model scales it by the heat actually produced since power-on
+     * ({@link warmupTauScale}): the recorded car warms in ≈ 110 s of loaded
+     * driving and ≈ 300 s of idling.
+     */
     coolantWarmupTauS: number;
     /**
      * How far above the coolant the warm oil settles.
@@ -57,6 +64,38 @@ export interface VehicleTraits {
  * sensor is least affected by the engine bay's heat soak.
  */
 export const AMBIENT_REFERENCE_STATE: DrivingState = {rpm: 2000, speedKmh: 60, engineLoadPct: 30, throttlePct: 20};
+
+/**
+ * Heat the engine puts into the coolant, relative to nothing in particular:
+ * rpm/1000 × load/100 — the fuel burned goes with the air mass, which goes
+ * with rpm × load.
+ */
+export const warmupHeat = (state: DrivingState): number =>
+    (Math.max(0, state.rpm) / 1000) * (Math.max(0, state.engineLoadPct) / 100);
+
+/**
+ * The driving state `coolantWarmupTauS` refers to: a gentle cruise, between
+ * the idling and the loaded warm-ups a recording holds.
+ */
+export const WARMUP_REFERENCE_STATE: DrivingState = {rpm: 1500, speedKmh: 40, engineLoadPct: 30, throttlePct: 15};
+
+// τ ∝ heat^−0.8 fits both ends of the recorded car (idle 930 rpm / 22 %:
+// ≈ 1.9 τ; 1800 rpm / 35 %: ≈ 0.75 τ); the bounds keep a stopped engine
+// from warming up never and a redlined one instantly.
+const WARMUP_HEAT_EXPONENT = 0.8;
+const WARMUP_TAU_SCALE_MIN = 0.4;
+const WARMUP_TAU_SCALE_MAX = 2.5;
+
+/**
+ * What `coolantWarmupTauS` is multiplied by for a warm-up at `meanHeat`
+ * (the {@link warmupHeat} averaged since power-on): 1 at the reference
+ * state, more for an idling engine, less under load, within 0.4 … 2.5.
+ */
+export function warmupTauScale(meanHeat: number): number {
+    if (!(meanHeat > 0)) return WARMUP_TAU_SCALE_MAX;
+    const scale = (warmupHeat(WARMUP_REFERENCE_STATE) / meanHeat) ** WARMUP_HEAT_EXPONENT;
+    return Math.min(WARMUP_TAU_SCALE_MAX, Math.max(WARMUP_TAU_SCALE_MIN, scale));
+}
 
 export const DEFAULT_TRAITS: VehicleTraits = {
     idleRpm: 800,

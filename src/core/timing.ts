@@ -13,11 +13,17 @@ const TIMEOUT_UNIT_MS = 4;
  * AT2 is the aggressive mode.
  */
 export const ADAPTIVE_TIMING_FACTORS: Readonly<Record<AdaptiveTimingMode, number>> = {0: 1, 1: 1, 2: 0.5};
+// AT1 learns from the responses it has seen: after a reset the first request
+// without a satisfied hint sits through the whole window, every later one
+// halves what is left above the persona's factor. Recorded on the vLinkers:
+// 148 → 118 → 91 → 87 ms after a reset (base 32, window 100, factor 0.55).
+const ADAPTIVE_LEARNING_RATE = 0.5;
 
 function adaptiveFactor(state: LinkState, persona: AdapterPersona): number {
     if (!persona.adaptiveTiming) return 1;
-    if (state.adaptiveTiming === 1) return persona.adaptiveTimingFactor ?? ADAPTIVE_TIMING_FACTORS[1];
-    return ADAPTIVE_TIMING_FACTORS[state.adaptiveTiming];
+    if (state.adaptiveTiming !== 1) return ADAPTIVE_TIMING_FACTORS[state.adaptiveTiming];
+    const learned = persona.adaptiveTimingFactor ?? ADAPTIVE_TIMING_FACTORS[1];
+    return learned + (1 - learned) * ADAPTIVE_LEARNING_RATE ** state.adaptiveSamples;
 }
 
 export function timeoutWindowMs(state: LinkState, persona: AdapterPersona): number {

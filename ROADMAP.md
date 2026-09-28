@@ -95,9 +95,12 @@ What is left from it:
 - **Thermal lag** — done 2026-09-23: catalyst/EGT/DPF PIDs see the state
   averaged over the last 45 s (the window is a guess: no recording polls
   them continuously); the warm coolant follows the 5-minute mean speed
-  (map-controlled thermostat, −4 … +7 °C around the target). Left: the
-  cold-start curve is a single exponential (real warm-up is faster at
-  speed), oil is flat at its target.
+  (map-controlled thermostat, −4 … +7 °C around the target). 2026-09-28:
+  the warm-up τ follows the heat put in (`warmupTauScale`), so a motorway
+  cold start warms in 3.5 minutes and a town one in 10, as recorded. Left:
+  the thermostat-opening dip (88 → 81 °C within a minute after a fast
+  stretch), coolant up to 104 °C under sustained load (the swing tops at
+  +7), oil flat at its target.
 - **Ambient temperature** — done 2026-09-23: `traits.ambientC` moves the
   fitted sensor to another day, heat soak kept; the importer writes the
   recorded day (30.4 °C); the intake temperature follows the shift too
@@ -106,9 +109,10 @@ What is left from it:
 - **Static state** — done 2026-09-23: odometer, fuel level and the in-use
   counters (`30`, `31`) come from the latest recording as traits (were
   synthetic constants). PID `34`'s pump current follows λ.
-- **The after-run phase length** (`afterRunMs`) is the app's 15-failure
-  cutoff (~10 s), not the car's: no recording keeps polling long enough to
-  see the ECU go silent on its own.
+- **The after-run phase length** — 2026-09-28: `VehicleProfile.afterRunMs`,
+  the importer stores the longest phase a recording saw end (145 s); the
+  car's real length depends on when it goes to sleep (12 s to 17 min
+  recorded).
 - **The clone's segment numbering** (`3:13490401…`, the second ECU's first
   frame numbered on from the first ECU's) is documented on
   `CLONE_OBDII_ADAPTER`, not modelled.
@@ -116,6 +120,34 @@ What is left from it:
   car's own ratios need more moving `A4` samples (29 exist).
 - **Key-on voltage** is a guess (12.4 V); no recording has the key on with
   the engine off for long.
+
+### 2.2d The 2026-09-28 review (15 new sessions, 131 in all) — done on 2026-09-28
+
+Built: engine-off coasting (model + cycle scoring + re-cut default drive),
+the vLinker's connect reset / dropped input / boot noise
+(`resetsOnConnect`, `dropsInputDuringReset`, `bootNoise`), `ATCS` latency
+(`canStatusLatencyMs`), the heat-scaled warm-up τ (above), the two-blank-line
+banner. Left from it:
+
+- **The default drive idles for 9 s only.** Of the five 15-minute windows in
+  the corpus that start and end at standstill, reach 80 km/h and carry
+  throttle and load throughout, none has both a real share of idling and
+  engine-off coasting; the coasting one won (`COASTING_WEIGHT` 0.5 in
+  `tools/import-vehicle/cycle.ts`). More recordings with load/throttle on
+  display will give the importer better windows.
+- **Post-crank voltage**: two recordings ramp 13.3 → 13.8 V over the first
+  minute, but across the corpus the first 90 s of `ATRV` sit anywhere
+  between −0.7 and +0.4 V of the session's median with no common shape —
+  not modelled until a recording starts before the engine does.
+- **Thermostat-opening dip**: 25 of 68 warm restarts dip ≥ 4 °C within four
+  minutes, 43 do not; the median profile is flat. Not modelled.
+- **`0100` after a reset** now takes the whole window (adaptive timing
+  learning, 132 ms vs 148 recorded); the OBDII clone's 269 ms stays a
+  documented deviation.
+- The vLinker FD never showed the connect reset in 58 recordings; whether
+  it drops input during its own ATZ is unknown.
+- The importer's `68` (IAT sensors) constant of 54 °C comes from one hot
+  session; `intakeTempC` (40) is what the intake PIDs actually use.
 
 ### 2.3 Reject a forced protocol the vehicle does not speak
 
