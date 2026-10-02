@@ -133,6 +133,10 @@ an Android phone).
   name, the flag an alias of `--simulator` (plus two vehicles nothing else
   could select). No consumer used either; the latest release on npm is
   0.3.1, so no 1.x user is affected.
+- `HYBRID_PROFILE` and `hybridDrivingModel()`: a synthetic hybrid nothing
+  selected but the removed `--profile hybrid`. Its one mechanism,
+  `DefaultDrivingModel({engineOffAtStandstill: true})`, stays. The synthetic
+  single-ECU gasoline car it was built on is now a test helper only.
 
 ### Fixed
 

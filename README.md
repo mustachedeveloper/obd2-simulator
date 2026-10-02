@@ -146,7 +146,6 @@ new SimulatorEngine({
 |---------|---------|
 | `GASOLINE_PROFILE` | The recorded car of `default-gasoline`. Pair it with `gasolineDrivingModel()` for its recorded drive — a profile passed without a `model` always gets the synthetic cycle; `createSimulator()` pairs them for you |
 | `DIESEL_PROFILE` | Compression-ignition car with the diesel pack (turbo, EGT, DPF, NOx, DEF) |
-| `HYBRID_PROFILE` | Gasoline hybrid: spark-ignition set + battery pack (`0x5B`), fuel type hybrid, engine off at standstill (`hybridDrivingModel()`) |
 | `REFERENCE_PROFILE` | The same car as `GASOLINE_PROFILE` under its original name — kept for compatibility |
 
 The default model takes a vehicle's measured constants and a recorded drive, which is how recorded simulators are built:

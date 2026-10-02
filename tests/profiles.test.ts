@@ -1,13 +1,7 @@
 import {describe, expect, it} from 'vitest';
-import {
-    DIESEL_PROFILE,
-    GASOLINE_PROFILE,
-    HYBRID_PROFILE,
-    PID_ENCODERS,
-    SimulatorEngine,
-    dieselDrivingModel,
-    hybridDrivingModel,
-} from '../src/index';
+import {DefaultDrivingModel} from '../src/core/DefaultDrivingModel';
+import {SYNTHETIC_GASOLINE_PROFILE} from './helpers/synthetic';
+import {DIESEL_PROFILE, GASOLINE_PROFILE, PID_ENCODERS, SimulatorEngine, dieselDrivingModel} from '../src/index';
 import type {DrivingModel, VehicleProfile} from '../src/index';
 
 const engineFor = (profile: VehicleProfile, model?: DrivingModel) => {
@@ -21,7 +15,6 @@ const engineFor = (profile: VehicleProfile, model?: DrivingModel) => {
 const BUILT_IN: readonly [string, VehicleProfile, DrivingModel | undefined][] = [
     ['gasoline', GASOLINE_PROFILE, undefined],
     ['diesel', DIESEL_PROFILE, dieselDrivingModel()],
-    ['hybrid', HYBRID_PROFILE, hybridDrivingModel()],
 ];
 
 describe('built-in profiles', () => {
@@ -51,33 +44,22 @@ describe('built-in profiles', () => {
     });
 });
 
-describe('hybrid profile', () => {
-    it('reports a hybrid powertrain and its battery pack', () => {
-        const hybrid = engineFor(HYBRID_PROFILE, hybridDrivingModel());
-        expect(hybrid.handleCommand('0151')).toBe('415111'); // fuel type 0x11 = hybrid gasoline
-        const pack = hybrid.handleCommand('015B');
-        expect(pack).toMatch(/^415B[0-9A-F]{2}$/);
-        expect((Number.parseInt(pack.slice(4), 16) * 100) / 255).toBeGreaterThan(40);
-        // Spark-ignition readiness and performance counters like the gasoline car.
-        expect(hybrid.handleCommand('0908')).not.toBe('NO DATA');
-        expect(hybrid.handleCommand('090B')).toBe('NO DATA');
-    });
-
-    it('stops the combustion engine at standstill', () => {
+describe('engine off at standstill (DefaultDrivingModel option)', () => {
+    it('stops the combustion engine while the car stands, every engine-derived signal agreeing', () => {
         let current = 0;
-        const hybrid = new SimulatorEngine({profile: HYBRID_PROFILE, model: hybridDrivingModel(), now: () => current, seed: 7});
-        hybrid.handleCommand('ATE0');
-        expect(hybrid.handleCommand('010C')).toBe('410C0000'); // idle phase: engine off, EV mode
-        // Every engine-derived signal agrees the engine is off.
-        expect(hybrid.handleCommand('0104')).toBe('410400');
-        expect(hybrid.handleCommand('0110')).toBe('41100000');
-        expect(hybrid.handleCommand('0166')).toBe('41660300000000');
-        expect(hybrid.handleCommand('010B')).toBe('410B65'); // atmospheric, no vacuum
-        expect(Number.parseInt(hybrid.handleCommand('0142').slice(4), 16) / 1000).toBeLessThan(13);
-        expect(Number.parseFloat(hybrid.handleCommand('ATRV'))).toBeLessThan(13);
-        expect(hybrid.handleCommand('015E')).toBe('415E0000');
+        const model = new DefaultDrivingModel({engineOffAtStandstill: true});
+        const car = new SimulatorEngine({profile: SYNTHETIC_GASOLINE_PROFILE, model, now: () => current, seed: 7});
+        car.handleCommand('ATE0');
+        expect(car.handleCommand('010C')).toBe('410C0000'); // idle phase: engine off
+        expect(car.handleCommand('0104')).toBe('410400');
+        expect(car.handleCommand('0110')).toBe('41100000');
+        expect(car.handleCommand('0166')).toBe('41660300000000');
+        expect(car.handleCommand('010B')).toBe('410B65'); // atmospheric, no vacuum
+        expect(Number.parseInt(car.handleCommand('0142').slice(4), 16) / 1000).toBeLessThan(13);
+        expect(Number.parseFloat(car.handleCommand('ATRV'))).toBeLessThan(13);
+        expect(car.handleCommand('015E')).toBe('415E0000');
         current = 60_000;
-        expect(Number.parseInt(hybrid.handleCommand('010C').slice(4), 16) / 4).toBeGreaterThan(1000);
-        expect(hybrid.handleCommand('ATIGN')).toBe('ON');
+        expect(Number.parseInt(car.handleCommand('010C').slice(4), 16) / 4).toBeGreaterThan(1000);
+        expect(car.handleCommand('ATIGN')).toBe('ON');
     });
 });
