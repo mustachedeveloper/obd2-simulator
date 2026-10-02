@@ -2,7 +2,6 @@ import {ADAPTER_PRESETS} from '../adapters/presets';
 import {normalizeDtc} from '../core/j1979';
 import {DEFAULT_SIMULATOR_ID, SIMULATORS, getSimulator} from '../simulators/registry';
 import type {SimulatorDefinition} from '../simulators/types';
-import {PROFILE_ALIASES, type ProfileAlias} from './profile-aliases';
 
 // Pure argument parsing for the CLI (no process access), so it is testable
 // and every malformed value produces a specific message instead of the
@@ -11,7 +10,6 @@ import {PROFILE_ALIASES, type ProfileAlias} from './profile-aliases';
 interface CliOptions {
     port: number;
     host: string;
-    // Chosen with --simulator <id>, or through the older --profile <name>.
     simulator: SimulatorDefinition;
     adapter: string;
     dtcs: readonly string[];
@@ -46,7 +44,6 @@ export const USAGE = [
     `  --host <address>     interface to bind (default ${DEFAULT_CLI_OPTIONS.host}; 127.0.0.1 for local-only)`,
     `  --simulator <id>     ${SIMULATOR_IDS} (default ${DEFAULT_SIMULATOR_ID})`,
     '  --list-simulators    describe the selectable simulators and exit',
-    '  --profile <name>     older spelling: gasoline | diesel | hybrid | reference (reference = 2-ECU CAN 29-bit car)',
     `  --adapter <name>     ${ADAPTER_NAMES} (default default)`,
     '  --dtc <code>         inject a stored DTC, repeatable (e.g. --dtc P0301)',
     `  --seed <n>           jitter seed for reproducible runs (default ${DEFAULT_CLI_OPTIONS.seed})`,
@@ -75,12 +72,6 @@ const MAX_PORT = 65535;
 const port = (flag: string, value: string | undefined): number => {
     const parsed = integer(flag, value);
     return parsed >= 0 && parsed <= MAX_PORT ? parsed : fail(`${flag} expects a port in 0-${MAX_PORT}, got ${parsed}`);
-};
-
-const PROFILES = Object.keys(PROFILE_ALIASES) as readonly ProfileAlias[];
-const profile = (value: string | undefined): SimulatorDefinition => {
-    const alias = PROFILES.find((name) => name === value);
-    return alias ? PROFILE_ALIASES[alias] : fail(`--profile expects ${PROFILES.join(' | ')}, got "${value ?? ''}"`);
 };
 
 const simulator = (value: string | undefined): SimulatorDefinition => {
@@ -115,13 +106,6 @@ export function parseArgs(argv: readonly string[]): CliParseResult {
 
 function parse(argv: readonly string[]): CliOptions {
     let options = DEFAULT_CLI_OPTIONS;
-    // The flag that picked the vehicle; the two spellings cannot be combined.
-    let selectedBy: string | null = null;
-    const select = (flag: string, definition: SimulatorDefinition): CliOptions => {
-        if (selectedBy !== null && selectedBy !== flag) fail('use either --simulator or --profile, not both');
-        selectedBy = flag;
-        return {...options, simulator: definition};
-    };
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
         const next = () => argv[++i];
@@ -134,10 +118,7 @@ function parse(argv: readonly string[]): CliOptions {
                 options = {...options, host: next() ?? fail('--host expects an address')};
                 break;
             case '--simulator':
-                options = select(arg, simulator(next()));
-                break;
-            case '--profile':
-                options = select(arg, profile(next()));
+                options = {...options, simulator: simulator(next())};
                 break;
             case '--list-simulators':
                 throw new ListRequested();

@@ -4,7 +4,6 @@ import {
     GASOLINE_PROFILE,
     HYBRID_PROFILE,
     PID_ENCODERS,
-    REFERENCE_PROFILE,
     SimulatorEngine,
     dieselDrivingModel,
     hybridDrivingModel,
@@ -22,7 +21,6 @@ const engineFor = (profile: VehicleProfile, model?: DrivingModel) => {
 const BUILT_IN: readonly [string, VehicleProfile, DrivingModel | undefined][] = [
     ['gasoline', GASOLINE_PROFILE, undefined],
     ['diesel', DIESEL_PROFILE, dieselDrivingModel()],
-    ['reference', REFERENCE_PROFILE, undefined],
     ['hybrid', HYBRID_PROFILE, hybridDrivingModel()],
 ];
 

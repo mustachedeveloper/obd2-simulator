@@ -1,7 +1,8 @@
 import type {AdapterPersona} from '../core/types';
 
 // Adapter personas measured from real devices on the same vehicle (2-ECU
-// Škoda, ISO 15765-4 CAN 29/500 — see src/profiles/reference.ts and
+// Škoda, ISO 15765-4 CAN 29/500 — the recorded default vehicle, see
+// src/vehicles/gasoline and
 // tests/fixtures/wirelog). Latencies are p50 wire-log values with the
 // response hint honored (vLinker) or the ATST19 = 100 ms window waited
 // (clone). The vehicle decides how many ECUs answer; the persona decides

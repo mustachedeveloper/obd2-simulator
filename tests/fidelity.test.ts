@@ -4,7 +4,7 @@ import {
     CLONE_V21_ADAPTER,
     DEFAULT_ADAPTER,
     GENUINE_ELM_ADAPTER,
-    REFERENCE_PROFILE,
+    GASOLINE_PROFILE,
     SimulatorEngine,
     VLINKER_ADAPTER,
 } from '../src/index';
@@ -123,7 +123,7 @@ describe('protocol search', () => {
     });
 
     it('reports the detected protocol after auto search from the vehicle profile', () => {
-        const reference = engineWith(VLINKER_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP0']);
+        const reference = engineWith(VLINKER_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP0']);
         expect(reference.handleCommand('ATDPN')).toBe('A7');
         expect(reference.handleCommand('ATDP')).toBe('AUTO, ISO 15765-4 (CAN 29/500)');
         expect(engineWith(DEFAULT_ADAPTER, SYNTHETIC_GASOLINE_PROFILE, ['ATE0']).handleCommand('ATDPN')).toBe('A6');
@@ -132,7 +132,7 @@ describe('protocol search', () => {
 
 describe('29-bit CAN addressing', () => {
     it('prints 29-bit response headers for ISO 15765-4 CAN 29 vehicles', () => {
-        const reference = engineWith(VLINKER_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP7', 'ATH1']);
+        const reference = engineWith(VLINKER_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP7', 'ATH1']);
         const rpm = lines(reference.handleCommand('010C'));
         // Recorded: '18DAF10104410C0E7E' — the car's own source addresses, and
         // the vLinker prints a single frame only as far as its PCI length.
@@ -147,7 +147,7 @@ describe('29-bit CAN addressing', () => {
             expect.stringMatching(/^18DAF10121[0-9A-F]{6}AAAAAAAA$/),
         ]);
         // The clone that pads everything lists both ECUs with the padding (recorded).
-        const clone = engineWith(CLONE_OBDII_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP7', 'ATH1']);
+        const clone = engineWith(CLONE_OBDII_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP7', 'ATH1']);
         expect(lines(clone.handleCommand('010C 1'))).toEqual([
             expect.stringMatching(/^18DAF10104410C[0-9A-F]{4}AAAAAA$/),
             expect.stringMatching(/^18DAF10204410C[0-9A-F]{4}AAAAAA$/),
@@ -171,7 +171,7 @@ describe('29-bit CAN addressing', () => {
     });
 
     it('addresses ECUs physically with 29-bit request headers', () => {
-        const reference = engineWith(VLINKER_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP7', 'ATH1']);
+        const reference = engineWith(VLINKER_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP7', 'ATH1']);
         reference.handleCommand('ATSH18DA02F1');
         expect(lines(reference.handleCommand('010C'))).toEqual([expect.stringMatching(/^18DAF102/)]);
         reference.handleCommand('ATSH18DA18F1'); // nobody lives there on this car
@@ -183,14 +183,14 @@ describe('29-bit CAN addressing', () => {
     });
 
     it('follows a forced 11-bit protocol even on a 29-bit vehicle (headers only)', () => {
-        const reference = engineWith(VLINKER_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP6', 'ATH1']);
+        const reference = engineWith(VLINKER_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP6', 'ATH1']);
         expect(lines(reference.handleCommand('010C'))[0]).toMatch(/^7E804410C/);
     });
 });
 
 describe('multi-ECU vehicles (profile-defined)', () => {
     it('answers mode 01 from every ECU that serves the PID, masks included', () => {
-        const reference = engineWith(CLONE_V21_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP7']);
+        const reference = engineWith(CLONE_V21_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP7']);
         expect(lines(reference.handleCommand('0100'))).toHaveLength(2);
         expect(lines(reference.handleCommand('010C'))).toHaveLength(2);
         expect(lines(reference.handleCommand('010B'))).toHaveLength(1);
@@ -200,7 +200,7 @@ describe('multi-ECU vehicles (profile-defined)', () => {
     });
 
     it('lists DTCs per ECU: the engine list, an empty list, or a negative response', () => {
-        const reference = engineWith(CLONE_V21_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP7']);
+        const reference = engineWith(CLONE_V21_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP7']);
         expect(reference.handleCommand('03')).toBe('4300\r7F0310\r4300');
         expect(reference.handleCommand('07')).toBe('4700\r7F0710\r4700');
         reference.injectDtc('P0301');
@@ -210,13 +210,13 @@ describe('multi-ECU vehicles (profile-defined)', () => {
     });
 
     it('answers NO DATA for permanent codes on vehicles without mode 0A', () => {
-        const reference = engineWith(CLONE_V21_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP7']);
+        const reference = engineWith(CLONE_V21_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP7']);
         expect(reference.handleCommand('0A')).toBe('NO DATA');
         expect(engineWith().handleCommand('0A')).toBe('4A00');
     });
 
     it('serves mode 09 per ECU: VIN from the engine only, calibration/CVN/name from both', () => {
-        const reference = engineWith(CLONE_V21_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP7']);
+        const reference = engineWith(CLONE_V21_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP7']);
         expect(lines(reference.handleCommand('0902'))[0]).toBe('014');
         expect(lines(reference.handleCommand('0902'))).toHaveLength(4);
         expect(lines(reference.handleCommand('0904')).filter((line) => line === '013')).toHaveLength(2);
@@ -230,12 +230,12 @@ describe('multi-ECU vehicles (profile-defined)', () => {
         const engine = engineWith();
         // 02, 04, 06, 08, 0A → bits 2,4,6,8,10 of the 32-bit mask.
         expect(engine.handleCommand('0900')).toBe('490055400000');
-        const reference = engineWith(CLONE_V21_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP7']);
+        const reference = engineWith(CLONE_V21_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP7']);
         expect(lines(reference.handleCommand('0900'))).toEqual(['490055400000', '490014400000']);
     });
 
     it('serves freeze-frame PID 02 as zeros when no DTC froze a frame', () => {
-        const reference = engineWith(CLONE_V21_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP7']);
+        const reference = engineWith(CLONE_V21_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP7']);
         expect(reference.handleCommand('020200')).toBe('4202000000\r4202000000');
         expect(engineWith().handleCommand('020200')).toBe('4202000000');
     });
@@ -255,7 +255,7 @@ describe('negative responses and unknown requests', () => {
     });
 
     it('rejects from every addressed ECU, so a physically addressed module rejects too', () => {
-        const reference = engineWith(CLONE_V21_ADAPTER, REFERENCE_PROFILE, ['ATE0', 'ATS0', 'ATSP7']);
+        const reference = engineWith(CLONE_V21_ADAPTER, GASOLINE_PROFILE, ['ATE0', 'ATS0', 'ATSP7']);
         expect(lines(reference.handleCommand('22F190'))).toEqual(['7F2211', '7F2211', '7F2211']);
         reference.handleCommand('ATSH18DA02F1');
         expect(reference.handleCommand('22F190')).toBe('7F2211');

@@ -40,7 +40,6 @@ describe('public API surface', () => {
             'HYBRID_PROFILE',
             'MemoryLink',
             'PID_ENCODERS',
-            'REFERENCE_PROFILE',
             'REFERENCE_SECOND_ECU_PIDS',
             'SIMULATORS',
             'STN_ADAPTER',

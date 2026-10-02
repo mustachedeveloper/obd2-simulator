@@ -3,7 +3,6 @@ import {
     DEFAULT_GASOLINE_SIMULATOR,
     GASOLINE_PROFILE,
     PID_ENCODERS,
-    REFERENCE_PROFILE,
     SimulatorEngine,
     VLINKER_ADAPTER,
     VLINKER_FD_ADAPTER,
@@ -154,10 +153,6 @@ describe('default gasoline vehicle — identity', () => {
             'to',
         ]);
     });
-
-    it('is what REFERENCE_PROFILE always described', () => {
-        expect(REFERENCE_PROFILE).toEqual({...GASOLINE_PROFILE, name: 'reference'});
-    });
 });
 
 describe('default gasoline vehicle — driving', () => {
@@ -243,11 +238,11 @@ describe('default gasoline vehicle — driving', () => {
     it('gives any explicitly passed profile the synthetic cycle unless a model comes with it', () => {
         let current = 0;
         const at = {now: () => current, seed: 3};
-        // The same rule for the default profile, an alias and a variant of it.
-        const engines = [GASOLINE_PROFILE, REFERENCE_PROFILE, {...GASOLINE_PROFILE, vin: 'TMBAN8NZ2SC654321'}].map(
+        // The same rule for the default profile and a variant of it.
+        const engines = [GASOLINE_PROFILE, {...GASOLINE_PROFILE, vin: 'TMBAN8NZ2SC654321'}].map(
             (profile) => new SimulatorEngine({...at, profile}),
         );
-        const paired = new SimulatorEngine({...at, profile: REFERENCE_PROFILE, model: gasolineDrivingModel()});
+        const paired = new SimulatorEngine({...at, profile: GASOLINE_PROFILE, model: gasolineDrivingModel()});
         current = 60_000; // synthetic cycle: cruising at ~90 km/h; the recorded drive is elsewhere
         for (const engine of [...engines, paired]) engine.handleCommand('ATE0');
         const speed = (engine: SimulatorEngine) => Number.parseInt(engine.handleCommand('010D 1').slice(4), 16);

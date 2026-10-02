@@ -126,6 +126,14 @@ an Android phone).
   cycles) and two more fits (actual torque `62` sloped, IAT sensors `68`
   constant); 118 sessions to 2026-09-28.
 
+### Removed
+
+- `REFERENCE_PROFILE` and the CLI's `--profile <name>` spelling. Both were
+  pre-1.0 compatibility: the profile was `GASOLINE_PROFILE` under its old
+  name, the flag an alias of `--simulator` (plus two vehicles nothing else
+  could select). No consumer used either; the latest release on npm is
+  0.3.1, so no 1.x user is affected.
+
 ### Fixed
 
 - `ATRV` read battery voltage (12.4 V) while the car coasted with the

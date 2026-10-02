@@ -6,7 +6,6 @@ export {MemoryLink} from './transports/MemoryLink';
 export type {CommandLogEntry, LinkCorruption, MemoryLinkOptions} from './transports/MemoryLink';
 export {GASOLINE_PROFILE, gasolineDrivingModel} from './profiles/gasoline';
 export {DIESEL_PROFILE, dieselDrivingModel} from './profiles/diesel';
-export {REFERENCE_PROFILE} from './profiles/reference';
 export {HYBRID_PROFILE, hybridDrivingModel} from './profiles/hybrid';
 export {DEFAULT_SIMULATOR_ID, SIMULATORS, getSimulator, listSimulators} from './simulators/registry';
 export {DEFAULT_GASOLINE_SIMULATOR} from './simulators/default-gasoline';

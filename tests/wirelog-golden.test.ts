@@ -3,7 +3,7 @@ import {describe, expect, it} from 'vitest';
 import {
     CLONE_OBDII_ADAPTER,
     CLONE_V21_ADAPTER,
-    REFERENCE_PROFILE,
+    GASOLINE_PROFILE,
     SimulatorEngine,
     VLINKER_ADAPTER,
     VLINKER_FD_ADAPTER,
@@ -71,7 +71,7 @@ const LENGTH_LINE = /^[0-9A-F]{3}$/;
 
 function replay(name: string, adapter: AdapterPersona): void {
     const entries = fixture(name);
-    const engine = new SimulatorEngine({now: () => 60_000, seed: 7, adapter, profile: REFERENCE_PROFILE});
+    const engine = new SimulatorEngine({now: () => 60_000, seed: 7, adapter, profile: GASOLINE_PROFILE});
     for (const entry of entries) {
         const simulated = engine.execute(entry.c);
         expect(simulated.silent, `${name}: ${entry.c} silence`).toBe(entry.r === '');
@@ -104,7 +104,7 @@ describe('wire-log golden replay', () => {
     it('charges a multi-second protocol search on the vLinker like the recording', () => {
         const search = fixture('vlinker-v2.3').find((entry) => entry.r.startsWith('SEARCHING'));
         expect(search).toBeDefined();
-        const engine = new SimulatorEngine({now: () => 60_000, seed: 7, adapter: VLINKER_ADAPTER, profile: REFERENCE_PROFILE});
+        const engine = new SimulatorEngine({now: () => 60_000, seed: 7, adapter: VLINKER_ADAPTER, profile: GASOLINE_PROFILE});
         for (const command of ['ATZ', 'ATE0', 'ATS0', 'ATSP0']) engine.handleCommand(command);
         const {latency} = engine.execute(search!.c);
         expect(latency.searchMs).toBeGreaterThan(1000);
