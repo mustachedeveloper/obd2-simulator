@@ -13,7 +13,7 @@ const IGNITION_STATES: readonly IgnitionState[] = ['off', 'key-on', 'running'];
 export const CONTROL_HELP = [
     'dtc <code> [stored|pending|permanent]',
     'set <pid-hex> <value|null>',
-    'ignition off|key-on|running  (off takes after-run seconds: ignition off 12)',
+    'ignition off|key-on|running  (off and key-on take after-run seconds: ignition off 12, ignition key-on 0)',
     'fail <ERROR TEXT> [count]',
     'adapter <preset>',
     'clear dtcs|overrides|faults',
@@ -61,12 +61,13 @@ function apply(line: string, engines: readonly SimulatorEngine[]): string {
             const [state, afterRun] = args;
             if (!state || !isIgnition(state)) fail(`ignition expects ${IGNITION_STATES.join('|')}, got "${state ?? ''}"`);
             if (afterRun === undefined) return each((engine) => engine.setIgnition(state), `ignition ${state}`);
-            if (state !== 'off') fail(`after-run seconds only apply to ignition off, got "${state}"`);
+            if (state === 'running') fail(`after-run seconds do not apply to ignition running`);
             const seconds = Number(afterRun);
-            if (!Number.isFinite(seconds) || seconds < 0) fail(`ignition off expects after-run seconds ≥ 0, got "${afterRun}"`);
+            if (!Number.isFinite(seconds) || seconds < 0)
+                fail(`ignition ${state} expects after-run seconds ≥ 0, got "${afterRun}"`);
             return each(
                 (engine) => engine.setIgnition(state, {afterRunMs: seconds * MS_PER_SECOND}),
-                `ignition off (after-run ${seconds} s)`,
+                `ignition ${state} (after-run ${seconds} s)`,
             );
         }
         case 'fail': {

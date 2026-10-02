@@ -175,7 +175,19 @@ export interface SimulatorLogger {
  * in time. Return null for "this PID has no data right now" (NO DATA).
  */
 export interface DrivingModel {
-    value(pid: number, elapsedSeconds: number, jitter: (amplitude: number) => number): number | null;
+    /**
+     * Physical value of a mode 01 PID `elapsedSeconds` after power-on; null
+     * → NO DATA. `context.engineStopped` is set while the key is on with the
+     * engine stopped: the moving parts rest, `elapsedSeconds` is the moment
+     * the engine stopped (so slow sensors — temperatures — hold). A model
+     * may ignore it.
+     */
+    value(
+        pid: number,
+        elapsedSeconds: number,
+        jitter: (amplitude: number) => number,
+        context?: {engineStopped?: boolean},
+    ): number | null;
 }
 
 export type LinkStatus = 'disconnected' | 'connecting' | 'connected';
@@ -188,12 +200,14 @@ export type IgnitionState = 'off' | 'key-on' | 'running';
 
 export interface SetIgnitionOptions {
     /**
-     * Only with 'off': how long the engine ECU stays awake after the engine
-     * stopped. Until then it rejects every request with 7F xx 22 (conditions
-     * not correct) while the other ECUs are already silent; afterwards NO
-     * DATA. Default: the vehicle's `VehicleProfile.afterRunMs` (0 — asleep
-     * at once — for a profile without one). Not part of a snapshot:
-     * restore() lands after the phase.
+     * How long the engine ECU rejects every request with 7F xx 22
+     * (conditions not correct) after the engine stopped, while the other
+     * ECUs are silent. With 'off' it then falls asleep (NO DATA); default:
+     * the vehicle's `VehicleProfile.afterRunMs` (0 — asleep at once — for a
+     * profile without one). With 'key-on' it then answers with the engine
+     * stopped; default: 3 s when the engine was running (recorded: 1–4 s),
+     * none when the key was off. Not allowed with 'running'. Not part of a
+     * snapshot: restore() lands after the phase.
      */
     afterRunMs?: number;
 }

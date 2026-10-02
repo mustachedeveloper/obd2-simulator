@@ -27,23 +27,34 @@ const GASOLINE_DENSITY_KG_PER_L = 0.745;
 const EXHAUST_KG_PER_H_PER_AIR_GPS = 3.6 * (1 + 1 / 14.7);
 const noJitter = (): number => 0;
 // The map-controlled thermostat of the recorded car: once warm, the coolant
-// sits ≈ 4.5 °C under the target while standing and up to 2.7 °C above it
-// on the move, following the speed of the last five minutes (9 691 warm
-// five-minute windows over 100+ recordings; the correlation is with speed,
-// 0.47, not with load). Around that mean it cycles ± 2.5 °C about once a
-// minute (deviation 1.8 °C rms, half-cycles of 25–38 s) as the thermostat
-// opens and closes. Oil does neither.
+// follows the speed and the load of the last five minutes — ≈ 3 °C under
+// the target standing, 3 °C over it at 80 km/h, and 0.14 °C lower per
+// percent of load above 20 % (46 534 warm readings in 91 recordings, fitted
+// on both at once: light-load cruising runs 97–98 °C with excursions to
+// 101–104, a loaded stretch at the same speed 90–91; the load term takes the
+// residual from 3.6 to 3.3 °C rms). Around that mean it cycles ± 2.5 °C
+// about once a minute (half-cycles of 25–38 s) as the thermostat opens and
+// closes. Oil does neither.
 const COOLANT_SWING_WINDOW_S = 300;
 const COOLANT_SWING_STEP_S = 15;
 const COOLANT_SWING_C: readonly (readonly [number, number])[] = [
-    [0, -4.5],
+    [0, -3],
     [10, -2],
-    [20, -0.5],
-    [40, 1.3],
-    [60, 2.4],
-    [80, 2.7],
-    [90, 2],
+    [20, 0.1],
+    [40, 1],
+    [60, 1.1],
+    [80, 2.9],
+    [90, 3.1],
 ];
+const COOLANT_LOAD_SLOPE_C_PER_PCT = -0.14;
+const COOLANT_REFERENCE_LOAD_PCT = 20;
+// …and the day: per session, the warm coolant sits 0.2 °C lower for every
+// degree the air is warmer (81 recordings, correlation −0.7 with the
+// ambient and the intake temperature — the map thermostat runs hotter in
+// cool weather: +3.6 °C on 25 °C days, −3.4 on 55 °C ones, against the
+// table fitted over all of them). Applied to `traits.ambientC` moving the
+// drive away from the recorded day.
+const COOLANT_PER_AMBIENT_C = -0.2;
 const COOLANT_CYCLE_AMPLITUDE_C = 2.5;
 const COOLANT_CYCLE_PERIOD_S = 65;
 // Exhaust-side sensors lag the drive by tens of seconds: catalyst, EGT and
@@ -128,8 +139,13 @@ export interface DefaultDrivingModelOptions {
     signals?: SignalFits;
 }
 
-// What the engine-derived sensors read with the combustion engine stopped.
+// What the engine-derived sensors read with the combustion engine stopped
+// (recorded with the key on at a filling station, 3.5 minutes: manifold at
+// atmospheric, timing 0°, no trim, fuel system status 0, commanded lambda
+// full lean, the wide-band sensor at stoichiometry with no pump current).
 const ENGINE_OFF_VALUES: Readonly<Record<number, number>> = {
+    0x03: 0, // fuel system status: off
+    0x06: 0, // short-term fuel trim: no closed loop
     0x0b: 101, // manifold pressure: atmospheric, no vacuum
     0x0e: 0, // timing advance
     0x10: 0, // MAF
@@ -142,10 +158,13 @@ const ENGINE_OFF_VALUES: Readonly<Record<number, number>> = {
 // Coasting with the engine stopped (a recorded cycle with rpm 0 on the
 // move: the car's start-stop shuts the engine while rolling, 2–20 s at a
 // time): the same, except the module voltage stays at charging level —
-// the recordings read 13.9–14.6 V throughout — and the commanded lambda
-// reads full lean like an overrun fuel cut while the wide-band sensor,
-// with no exhaust flow, sits at stoichiometry.
+// the recordings read 13.9–14.6 V throughout.
 const {0x42: _charging, ...COASTING_VALUES} = ENGINE_OFF_VALUES;
+// The engine stopped while the key stays on (`SimulatorEngine.setIgnition('key-on')`):
+// the instant state is this, the slow ones (warm-up, thermostat, exhaust
+// temperatures) keep the moment the engine stopped. The throttle rests where
+// a drive-by-wire plate idles.
+const REST_STATE: DrivingState = {speedKmh: 0, rpm: 0, throttlePct: 12, engineLoadPct: 0};
 
 // Distance driven since power-on: piecewise integral of the speed profile.
 // One full 96s cycle covers 0.1 (accel) + 1.5 (cruise) + 0.1 (decel) km.
@@ -200,15 +219,22 @@ export class DefaultDrivingModel implements DrivingModel {
                 : 0;
     }
 
-    value(pid: number, elapsedSeconds: number, jitter: (amplitude: number) => number): number | null {
+    value(
+        pid: number,
+        elapsedSeconds: number,
+        jitter: (amplitude: number) => number,
+        context: {engineStopped?: boolean} = {},
+    ): number | null {
         const state = THERMAL_PIDS.has(pid)
             ? this.laggedState(elapsedSeconds, THERMAL_WINDOW_S, THERMAL_STEP_S)
-            : this.drivingState(elapsedSeconds, jitter);
+            : context.engineStopped
+              ? REST_STATE
+              : this.drivingState(elapsedSeconds, jitter);
         const stopped = state.rpm < RUNNING_RPM;
         const coasting = stopped && state.speedKmh >= 1;
         const stoppedValue = stopped ? (coasting ? COASTING_VALUES : ENGINE_OFF_VALUES)[pid] : undefined;
         if (stoppedValue !== undefined) return stoppedValue;
-        if (pid === 0x44 && coasting) return FUEL_CUT_LAMBDA;
+        if (pid === 0x44 && stopped) return FUEL_CUT_LAMBDA;
         if (LAMBDA_PIDS.has(pid) && this.fuelCut(state)) return FUEL_CUT_LAMBDA;
         const fit = this.signals.get(pid);
         if (fit) {
@@ -468,13 +494,19 @@ export class DefaultDrivingModel implements DrivingModel {
         const {coolantStartC, coolantTargetC} = this.traits;
         const warmup = this.warmup(elapsedSeconds);
         const cycle = COOLANT_CYCLE_AMPLITUDE_C * Math.sin((2 * Math.PI * elapsedSeconds) / COOLANT_CYCLE_PERIOD_S);
-        return coolantStartC + (coolantTargetC - coolantStartC) * warmup + (this.coolantSwingC(elapsedSeconds) + cycle) * warmup;
+        const day = COOLANT_PER_AMBIENT_C * this.ambientShiftC;
+        return (
+            coolantStartC +
+            (coolantTargetC - coolantStartC) * warmup +
+            (this.coolantSwingC(elapsedSeconds) + cycle + day) * warmup
+        );
     }
 
     private coolantSwingC(elapsedSeconds: number): number {
-        return interpolate(
-            COOLANT_SWING_C,
-            this.laggedState(elapsedSeconds, COOLANT_SWING_WINDOW_S, COOLANT_SWING_STEP_S).speedKmh,
+        const recent = this.laggedState(elapsedSeconds, COOLANT_SWING_WINDOW_S, COOLANT_SWING_STEP_S);
+        return (
+            interpolate(COOLANT_SWING_C, recent.speedKmh) +
+            COOLANT_LOAD_SLOPE_C_PER_PCT * (recent.engineLoadPct - COOLANT_REFERENCE_LOAD_PCT)
         );
     }
 

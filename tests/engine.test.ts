@@ -119,7 +119,7 @@ describe('DTC lifecycle', () => {
         expect(engine.handleCommand('04')).toBe('7F0422');
         expect(engine.storedDtcs).toEqual(['P0301']);
         expect(engine.handleCommand('0202')).not.toBe('4202000000');
-        engine.setIgnition('key-on');
+        engine.setIgnition('key-on', {afterRunMs: 0});
         expect(engine.handleCommand('04')).toBe('44');
         expect(engine.storedDtcs).toEqual([]);
     });

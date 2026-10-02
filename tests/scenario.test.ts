@@ -68,7 +68,7 @@ describe('ignition states', () => {
 
     it('answers with a stopped engine when the key is on', () => {
         const engine = engineAt(60_000);
-        engine.setIgnition('key-on');
+        engine.setIgnition('key-on', {afterRunMs: 0}); // skip the engine ECU's few seconds of 7F xx 22
         expect(rpmOf(engine)).toBe(0);
         expect(engine.handleCommand('010D')).toBe('410D00');
         expect(engine.handleCommand('011F')).toBe('411F0000'); // run time

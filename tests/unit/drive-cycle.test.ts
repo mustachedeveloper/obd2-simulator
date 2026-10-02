@@ -31,11 +31,12 @@ function fingerprint(model: DefaultDrivingModel): string {
 
 describe('DefaultDrivingModel defaults', () => {
     it('are untouched by the traits / drive-cycle options', () => {
-        // Re-pinned 2026-09-28: the warm-up τ follows the heat put in, the warm coolant swings and cycles as the corpus does (PIDs 03 / 05 / 3C / 3E / 5C / 67).
-        expect(fingerprint(new DefaultDrivingModel())).toBe('220c532b');
-        expect(fingerprint(new DefaultDrivingModel({fuelType: 4}))).toBe('d90fe090');
-        expect(fingerprint(new DefaultDrivingModel({engineOffAtStandstill: true}))).toBe('f7c3eb90');
-        expect(fingerprint(new DefaultDrivingModel({traits: {}}))).toBe('220c532b');
+        // Re-pinned 2026-10-02: the warm coolant follows speed and load; a stopped engine reports fuel system
+        // status 0, no short-term trim and commanded lambda full lean (PIDs 03 / 05 / 06 / 44 / 67).
+        expect(fingerprint(new DefaultDrivingModel())).toBe('1c6b87eb');
+        expect(fingerprint(new DefaultDrivingModel({fuelType: 4}))).toBe('f1c44cc');
+        expect(fingerprint(new DefaultDrivingModel({engineOffAtStandstill: true}))).toBe('74bcae78');
+        expect(fingerprint(new DefaultDrivingModel({traits: {}}))).toBe('1c6b87eb');
     });
 });
 
@@ -131,7 +132,7 @@ describe('fitted signals', () => {
     });
 
     it('leave the defaults untouched when absent or empty', () => {
-        expect(fingerprint(new DefaultDrivingModel({signals: {}}))).toBe('220c532b');
+        expect(fingerprint(new DefaultDrivingModel({signals: {}}))).toBe('1c6b87eb');
     });
 });
 

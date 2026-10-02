@@ -92,7 +92,7 @@ const server = createTcpServer({
 | Mode 06 | On-board monitor test records (MID/TID/UAS/value/limits) |
 | Mode 09 | `0900` mask, VIN, calibration ID, CVN, ECU name (per ECU), in-use performance counters (spark `08` / diesel `0B`) — ISO-TP framed |
 | Negative responses | Any other hex request (UDS `22…`, `19…`, mode `05`) is rejected with `7F <sid> 11`; only non-hex input gets `?` |
-| Driving model | Default gasoline: a recorded 15-minute real drive replayed in a loop, engine-off coasting included (rpm 0 on the move: no fuel, no air, commanded lambda full lean, voltage still charging — 18 episodes). Others: synthetic 96s cycle (idle → acceleration → ~90 km/h cruise → deceleration). Exponential coolant/oil warm-up whose time constant follows the heat put in (loaded driving warms three times faster than idling), the warm coolant swinging with the last five minutes' speed and cycling ± 2.5 °C with the thermostat, fuel burn; every other signal derived from the same driving state |
+| Driving model | Default gasoline: a recorded 15-minute real drive replayed in a loop, engine-off coasting included (rpm 0 on the move: no fuel, no air, commanded lambda full lean, voltage still charging — 18 episodes). Others: synthetic 96s cycle (idle → acceleration → ~90 km/h cruise → deceleration). Exponential coolant/oil warm-up whose time constant follows the heat put in (loaded driving warms three times faster than idling), the warm coolant swinging with the last five minutes' speed and load (light-load cruises run 97–101 °C, loaded ones 90), running hotter on a colder `ambientC` day, and cycling ± 2.5 °C with the thermostat, fuel burn, the alternator climbing back to charging level after a start; every other signal derived from the same driving state |
 
 ## Choosing a simulator
 
@@ -208,7 +208,7 @@ Everything mutable can be driven from the test while the app keeps polling:
 ```ts
 const engine = new SimulatorEngine();
 engine.override(0x05, 120);           // coolant pinned at 120 °C (null → NO DATA); freeze frames capture it
-engine.setIgnition('key-on');         // ECUs awake, engine stopped: RPM 0, 12.4 V; 'off' → every ECU asleep
+engine.setIgnition('key-on');         // engine stopped, key on: 3 s of 7F0122 first (afterRunMs: 0 skips it), then RPM 0, temperatures held, 12.4 V sagging; 'off' → every ECU asleep
 engine.setIgnition('off', {afterRunMs: 12_000}); // like a real shutdown: 12 s of 7F0122 from the engine ECU, then NO DATA
 engine.injectDtc('P0171', 'pending'); // pendingDtcs / permanentDtcs / removeDtc / clearDtcs
 engine.failNext('BUFFER FULL', 2);    // next two OBD requests print the adapter error
@@ -231,6 +231,7 @@ dtc P0301            → ok 1 engine(s): injected P0301 (stored)
 set 05 120           → ok 1 engine(s): PID 05 = 120
 ignition off         → ok 1 engine(s): ignition off
 ignition off 12      → ok 1 engine(s): ignition off (after-run 12 s)
+ignition key-on 0    → ok 1 engine(s): ignition key-on (after-run 0 s)
 fail BUFFER FULL 2   → ok 1 engine(s): next 2 request(s) → BUFFER FULL
 adapter clone · clear dtcs|overrides|faults · status · help
 ```

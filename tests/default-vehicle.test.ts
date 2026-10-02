@@ -201,27 +201,27 @@ describe('default gasoline vehicle — driving', () => {
     it('carries the measured traits', () => {
         expect(TRAITS).toEqual({
             idleRpm: 930,
-            coolantTargetC: 93,
+            coolantTargetC: 94,
             chargingVoltage: 13.9,
             longTermFuelTrimPct: -5.5,
-            intakeTempC: 40,
-            // Where the latest recording left the car.
-            odometerKm: 51629.4,
-            fuelLevelPct: 34,
-            warmupsSinceClear: 100,
-            distanceSinceClearKm: 3317,
+            intakeTempC: 39,
+            // Where the latest recording left the car (it was refuelled in it).
+            odometerKm: 51890.1,
+            fuelLevelPct: 100,
+            warmupsSinceClear: 113,
+            distanceSinceClearKm: 3581,
             // From the sessions that began with a cold engine; τ brought to the reference heat (1500 rpm, 30 % load).
             coolantStartC: 47,
-            coolantWarmupTauS: 141,
-            oilOverCoolantC: 4,
+            coolantWarmupTauS: 142,
+            oilOverCoolantC: 2,
             // The fitted ambient sensor at the reference cruise state.
-            ambientC: 30.4,
+            ambientC: 28,
         });
         expect(model.value(0x05, 0, noJitter)).toBe(47);
-        expect(model.value(0x5c, 100_000, noJitter)).toBeCloseTo(97, 3);
-        const warm = model.value(0x05, 100_000, noJitter) ?? 0; // the thermostat swings ±4–7 °C around the target with the drive
-        expect(warm).toBeGreaterThan(88);
-        expect(warm).toBeLessThan(101);
+        expect(model.value(0x5c, 100_000, noJitter)).toBeCloseTo(96, 3);
+        const warm = model.value(0x05, 100_000, noJitter) ?? 0; // the thermostat swings with the drive: 85 … 104 °C recorded
+        expect(warm).toBeGreaterThan(85);
+        expect(warm).toBeLessThan(104);
         // Long-term fuel trim comes from the fitted signals, which win over the trait.
         expect(model.value(0x07, 0, noJitter)).toBe(SIGNALS[0x07]?.base);
     });

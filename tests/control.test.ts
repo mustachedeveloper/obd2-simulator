@@ -20,6 +20,8 @@ describe('control commands', () => {
         expect(live[0]?.handleCommand('0105')).toBe('4105A0');
         expect(applyControlCommand('set 0C null', live)).toBe('ok 2 engine(s): PID 0C = NO DATA');
         expect(applyControlCommand('ignition key-on', live)).toBe('ok 2 engine(s): ignition key-on');
+        expect(applyControlCommand('ignition key-on 0', live)).toBe('ok 2 engine(s): ignition key-on (after-run 0 s)');
+        expect(live[0]?.handleCommand('010D')).toBe('410D00'); // no rejection: the phase was 0 s
         expect(applyControlCommand('fail BUFFER FULL 2', live)).toBe('ok 2 engine(s): next 2 request(s) → BUFFER FULL');
         expect(live[1]?.handleCommand('010D')).toBe('BUFFER FULL');
         expect(applyControlCommand('adapter clone', live)).toBe('ok 2 engine(s): adapter clone-v2.1');

@@ -385,6 +385,24 @@ describe('fitSignals', () => {
         expect(fitOnce([lambda], [0x44]).signals).toEqual({});
     });
 
+    it('ignores what the sensors read while the engine was stopped', () => {
+        // Key on at a filling station: rpm 0, manifold at atmospheric. On the running fit that is a cloud of
+        // outliers; the model's engine-off table serves those moments.
+        const stopped: Sample[] = Array.from({length: 200}, (_, i) => {
+            const t = 20_000_000 + i * 1000;
+            return [
+                {t, p: 'engineLoad', v: 0},
+                {t: t + 10, p: 'rpm', v: 0},
+                {t: t + 20, p: 'speed', v: 0},
+                {t: t + 30, p: 'intakeMap', v: 100},
+            ];
+        }).flat();
+        const {signals, diagnosis} = fitOnce([drive(0), stopped], [0x0b]);
+        expect(signals[0x0b]?.base).toBeCloseTo(25, 1);
+        expect(diagnosis[0]?.rSquared).toBeGreaterThan(0.99);
+        expect(diagnosis[0]?.samples).toBe(fitOnce([drive(0)], [0x0b]).diagnosis[0]?.samples);
+    });
+
     it('fits only requested PIDs and known channels, and needs a fresh driving state', () => {
         expect(Object.keys(fitOnce([drive(0)], [0x33]).signals)).toEqual([String(0x33)]);
         const stale: Sample[] = [

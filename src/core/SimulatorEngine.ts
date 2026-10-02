@@ -79,19 +79,24 @@ const CLEAR_PAYLOADS = {
 } as const;
 const MIL_BIT = 0x80;
 const MAX_DTC_COUNT = 0x7f;
-// Key on, engine off: the moving parts read zero, the battery carries the bus.
+// Key on, engine off: the moving parts read zero whatever the model says;
+// everything else comes from the model with the engine stopped (recorded
+// 2026-10-01: 3.5 minutes with the key on at a filling station).
 const KEY_ON_VALUES: Readonly<Record<number, number>> = {
     0x04: 0,
     0x0c: 0,
     0x0d: 0,
     0x10: 0,
     0x1f: 0,
-    0x42: 12.4,
     0x43: 0,
     0x5e: 0,
     0x61: 0,
     0x62: 0,
 };
+// The engine ECU rejects requests (7F xx 22) for a few seconds after the
+// engine stops with the key still on, then answers again: 3–4 s recorded at
+// the filling station, ≈ 1 s on a start-stop restart.
+const ENGINE_STOP_REJECT_MS = 3000;
 const GEAR_PID = 0xa4;
 const STOPPED = 'STOPPED';
 // How long the vLinker took to print STOPPED after a search was cut short.
@@ -104,8 +109,15 @@ const SILENCE = {
     latency: {baseMs: 0, jitterMs: 0, waitMs: 0, searchMs: 0, totalMs: 0},
     silent: true,
 } as const;
-// Recorded after the engine stopped: 12.4–12.5 V on the vLinkers.
-const VOLTAGE = {off: 12.4, keyOn: 12.4, running: 14.1, cranked: 400};
+// Recorded after the engine stopped: 12.4–12.5 V on the vLinkers. With the
+// key left on the battery sags ≈ 0.08 V a minute (12.4 → 12.1 V in 3.5
+// minutes); after a start the alternator output climbs from ≈ 13.1 V back
+// to charging level within half a minute (12.1 → 13.1 → 13.9 V, τ ≈ 12 s).
+const VOLTAGE = {off: 12.4, keyOn: 12.4, running: 14.1, charging: 13};
+const KEY_ON_SAG_V_PER_MIN = 0.08;
+const KEY_ON_SAG_MAX_V = 0.5;
+const CRANK_DEFICIT_V = 0.9;
+const CRANK_RECOVERY_TAU_S = 12;
 interface Outcome {
     /**
      * The adapter drops the command: nothing is printed, not even the prompt.
@@ -149,6 +161,12 @@ export class SimulatorEngine {
     private ignitionState: IgnitionState = 'running';
     // End of the engine ECU's after-run phase (clock of `now`); null → none.
     private afterRunUntil: number | null = null;
+    // When the engine last started (clock of `now`): the alternator ramp.
+    private runningSince: number;
+    // Key on, engine stopped: when it stopped (clock of `now`) and where the
+    // drive was (seconds since power-on) — the slow sensors hold that moment.
+    private stoppedAt: number | null = null;
+    private stoppedElapsedS = 0;
     private faults: AdapterFault[] = [];
     private readonly commandListeners = new Set<(result: CommandResult) => void>();
 
@@ -163,6 +181,7 @@ export class SimulatorEngine {
         this.now = options.now ?? Date.now;
         this.random = mulberry32(options.seed ?? 42);
         this.startedAt = this.now();
+        this.runningSince = this.startedAt;
         this.logger = options.logger ?? {};
         this.latencyFor = options.latencyFor ?? null;
         this.persona = options.adapter ?? DEFAULT_ADAPTER;
@@ -271,20 +290,37 @@ export class SimulatorEngine {
 
     /**
      * Key off puts every ECU to sleep (NO DATA / UNABLE TO CONNECT); key on
-     * answers with a stopped engine; running is the driving cycle.
+     * answers with a stopped engine — the temperatures hold where the engine
+     * stopped, the battery sags slowly; running is the driving cycle, with
+     * the alternator climbing back to charging level after a start. An engine
+     * that was running rejects requests for a few seconds first, with either
+     * key position (`afterRunMs`).
      *
-     * @throws if `afterRunMs` is negative, not finite, or given with a state other than 'off'.
+     * @throws if `afterRunMs` is negative, not finite, or given with 'running'.
      */
     setIgnition(state: IgnitionState, options: SetIgnitionOptions = {}): void {
         const given = options.afterRunMs;
         if (given !== undefined && (!Number.isFinite(given) || given < 0))
             throw new Error(`afterRunMs must be a non-negative number, got ${given}`);
-        if (given !== undefined && given > 0 && state !== 'off')
-            throw new Error(`afterRunMs only applies to ignition 'off', got '${state}'`);
-        const afterRunMs = given ?? (state === 'off' ? (this.profile.afterRunMs ?? 0) : 0);
+        if (given !== undefined && given > 0 && state === 'running')
+            throw new Error(`afterRunMs does not apply to ignition 'running'`);
+        const previous = this.ignitionState;
+        const afterRunMs = given ?? this.defaultAfterRunMs(previous, state);
+        const now = this.now();
+        if (state === 'key-on' && previous !== 'key-on') {
+            this.stoppedAt = now;
+            this.stoppedElapsedS = previous === 'running' ? this.elapsedSeconds() : 0;
+        }
+        if (state === 'running' && previous !== 'running') this.runningSince = now;
         this.ignitionState = state;
-        this.afterRunUntil = afterRunMs > 0 ? this.now() + afterRunMs : null;
+        this.afterRunUntil = afterRunMs > 0 ? now + afterRunMs : null;
         this.logger.info?.(`ignition → ${state}${afterRunMs > 0 ? ` (after-run ${afterRunMs} ms)` : ''}`);
+    }
+
+    private defaultAfterRunMs(previous: IgnitionState, next: IgnitionState): number {
+        if (next === 'off') return this.profile.afterRunMs ?? 0;
+        if (next === 'key-on' && previous === 'running') return ENGINE_STOP_REJECT_MS;
+        return 0;
     }
 
     get ignition(): IgnitionState {
@@ -350,6 +386,9 @@ export class SimulatorEngine {
         this.overridesMap = new Map(Object.entries(parsed.overrides).map(([pid, value]) => [Number(pid), value]));
         this.ignitionState = parsed.ignition;
         this.afterRunUntil = null;
+        this.runningSince = this.now();
+        this.stoppedAt = this.now();
+        this.stoppedElapsedS = this.elapsedSeconds();
         this.faults = [...parsed.pendingFaults];
     }
 
@@ -559,6 +598,7 @@ export class SimulatorEngine {
     private respondObd(request: string): EcuResponse[] {
         const service = request.slice(0, 2);
         if (this.ignitionState === 'off') return this.inAfterRun() ? this.afterRunRejection(service) : [];
+        if (this.ignitionState === 'key-on' && this.inAfterRun()) return this.afterRunRejection(service);
         const argument = request.slice(2);
         switch (service) {
             case '01':
@@ -727,10 +767,34 @@ export class SimulatorEngine {
         this.freezeFrame = snapshot;
     }
 
+    // ATRV: what the adapter measures at the diagnostic socket. Follows the
+    // module voltage's state — charging whenever the model says so, coasting
+    // with the engine off included — at the socket's own level.
     private voltage(): string {
-        const rpm = this.modelValue(0x0c) ?? 0;
-        const base = this.ignitionState === 'off' ? VOLTAGE.off : rpm > VOLTAGE.cranked ? VOLTAGE.running : VOLTAGE.keyOn;
+        const base =
+            this.ignitionState === 'off'
+                ? VOLTAGE.off
+                : this.ignitionState === 'key-on'
+                  ? VOLTAGE.keyOn - this.keyOnSagV()
+                  : (this.modelValue(0x42) ?? 0) > VOLTAGE.charging
+                    ? VOLTAGE.running - this.crankDeficitV()
+                    : VOLTAGE.keyOn;
         return `${(base + (this.persona.voltageOffsetV ?? 0) + this.jitter(0.15)).toFixed(1)}V`;
+    }
+
+    private keyOnSagV(): number {
+        if (this.stoppedAt === null) return 0;
+        const minutes = Math.max(0, this.now() - this.stoppedAt) / 60_000;
+        return Math.min(KEY_ON_SAG_MAX_V, KEY_ON_SAG_V_PER_MIN * minutes);
+    }
+
+    private crankDeficitV(): number {
+        const seconds = Math.max(0, this.now() - this.runningSince) / 1000;
+        return CRANK_DEFICIT_V * Math.exp(-seconds / CRANK_RECOVERY_TAU_S);
+    }
+
+    private elapsedSeconds(): number {
+        return Math.max(0, (this.now() - this.startedAt) / 1000);
     }
 
     private encodeCurrentValue(ecu: Ecu, pid: number): number[] | null {
@@ -756,13 +820,19 @@ export class SimulatorEngine {
     // Overrides win, then the power state, then the driving model.
     private modelValue(pid: number): number | null {
         if (this.overridesMap.has(pid)) return this.overridesMap.get(pid) ?? null;
+        const jitter = (amplitude: number) => this.jitter(amplitude);
         if (this.ignitionState === 'key-on') {
             const keyOn = KEY_ON_VALUES[pid];
             if (keyOn !== undefined) return keyOn;
-            return this.model.value(pid, 0, (amplitude) => this.jitter(amplitude));
+            const value = this.model.value(pid, this.stoppedElapsedS, jitter, {engineStopped: true});
+            return pid === 0x42 && value !== null ? value - this.keyOnSagV() : value;
         }
-        const elapsedSeconds = Math.max(0, (this.now() - this.startedAt) / 1000);
-        return this.model.value(pid, elapsedSeconds, (amplitude) => this.jitter(amplitude));
+        const value = this.model.value(pid, this.elapsedSeconds(), jitter);
+        // The module voltage climbs back after a start like the socket's.
+        if (pid === 0x42 && value !== null && value > VOLTAGE.charging && this.ignitionState === 'running') {
+            return value - this.crankDeficitV();
+        }
+        return value;
     }
 
     private jitter(amplitude: number): number {

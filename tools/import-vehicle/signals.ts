@@ -129,6 +129,12 @@ const WITHOUT_LOAD: readonly Slope[] = ['krpm', 'kmh'];
 const STATE_CHANNELS = ['engineLoad', 'rpm', 'speed'] as const;
 // A state reading older than this no longer describes the moment.
 const MAX_STATE_AGE_MS = 2000;
+// Below this the engine is not running (same threshold as the model). What
+// a stopped engine reports — key on at the pump, coasting engine-off — is
+// the model's engine-off table, not a point on the running fit: one
+// recording of a 3.5-minute key-on stop put 73 atmospheric manifold readings
+// at rpm 0 into PID 0B and cost it its fit.
+const RUNNING_RPM = 300;
 const SIGNIFICANT = 4;
 
 const compact = (value: number): number => Number(value.toPrecision(SIGNIFICANT));
@@ -153,7 +159,7 @@ function rowsOf(samples: readonly Sample[]): Map<number, Row[]> {
             return reading !== undefined && sample.t - reading.t <= MAX_STATE_AGE_MS ? reading.v : null;
         };
         const [rpm, speed] = [fresh('rpm'), fresh('speed')];
-        if (pid === undefined || rpm === null || speed === null) continue;
+        if (pid === undefined || rpm === null || speed === null || rpm < RUNNING_RPM) continue;
         const row = {load: fresh('engineLoad'), krpm: rpm / 1000, kmh: speed, value: sample.v};
         // Appending in place: a session holds tens of thousands of samples.
         const bucket = rows.get(pid) ?? [];

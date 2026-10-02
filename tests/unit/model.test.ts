@@ -75,24 +75,28 @@ describe('DefaultDrivingModel', () => {
         expect(at(0x5c, 3000)).toBeGreaterThan(at(0x05, 3000) ?? 0); // oil settles hotter
     });
 
-    it('runs the warm coolant cooler when standing and hotter on the move, as the recorded thermostat does', () => {
+    it('runs the warm coolant cooler when standing and under load, hotter on a light-load cruise, as the recorded thermostat does', () => {
         // A recorded 19-minute loop: 12 minutes standing, 6 at 70 km/h, one standing.
         const repeat = <T>(value: T, times: number) => Array.from({length: times}, () => value);
-        const cycle = {
+        const loopOf = (cruiseLoad: number) => ({
             stepSeconds: 60,
             speedKmh: [...repeat(0, 12), ...repeat(70, 6), 0],
             rpm: [...repeat(930, 12), ...repeat(2000, 6), 930],
             throttlePct: [...repeat(12, 12), ...repeat(25, 6), 12],
-            engineLoadPct: [...repeat(20, 12), ...repeat(35, 6), 20],
-        };
-        const model = new DefaultDrivingModel({cycle, traits: {coolantTargetC: 93, coolantWarmupTauS: 60}});
+            engineLoadPct: [...repeat(20, 12), ...repeat(cruiseLoad, 6), 20],
+        });
+        const traits = {coolantTargetC: 93, coolantWarmupTauS: 60};
+        const model = new DefaultDrivingModel({cycle: loopOf(20), traits});
         const loop = 3 * 19 * 60; // long warm; times below are positions in the fourth loop
         // Samples interpolate: the speed ramps 0 → 70 between 660 s and 720 s.
         const standing = model.value(0x05, loop + 640, noJitter) ?? 0; // standing for the last 5 min
         const moving = model.value(0x05, loop + 1020, noJitter) ?? 0; // 5 min at 70 km/h behind it
-        expect(standing).toBeCloseTo(89, 0); // target − 4
-        expect(moving).toBeGreaterThan(96); // target + 3.5 … 7
+        expect(standing).toBeCloseTo(93 - 3 + 2.5 * Math.sin((2 * Math.PI * (loop + 640)) / 65), 6); // target − 3, plus the thermostat's cycle
+        expect(moving).toBeGreaterThan(94.5); // target + 2 … 4.5
         expect(model.value(0x5c, loop + 1020, noJitter)).toBeCloseTo(model.value(0x5c, loop + 640, noJitter) ?? 0, 0); // oil does not swing
+        // The same cruise at 50 % load runs ≈ 4 °C cooler (−0.14 °C per % above 20).
+        const loaded = new DefaultDrivingModel({cycle: loopOf(50), traits});
+        expect(loaded.value(0x05, loop + 1020, noJitter)).toBeCloseTo(moving - 4.2, 6);
         // Shortly into the move the coolant has only started to climb: it follows the last 5 minutes, not the instant.
         const justMoving = model.value(0x05, loop + 740, noJitter) ?? 0;
         expect(justMoving).toBeGreaterThan(standing);
@@ -125,16 +129,16 @@ describe('DefaultDrivingModel', () => {
         expect(tauIdle).toBeLessThan(320);
         expect(tauLoad).toBeGreaterThan(110);
         expect(tauLoad).toBeLessThan(130);
-        // The thermostat swing (−4.5 °C standing, +2.4 °C at 60 km/h) and its ±2.5 °C cycle scale with the warm-up too.
+        // The thermostat swing (−3 °C standing, +1.1 °C at 60 km/h, −0.14 °C per % load above 20) and its ±2.5 °C cycle scale with the warm-up too.
         const expected = (tauS: number, swing: number, seconds: number) => {
             const warmup = 1 - Math.exp(-seconds / tauS);
             const cycle = 2.5 * Math.sin((2 * Math.PI * seconds) / 65);
             return 30 + 63 * warmup + (swing + cycle) * warmup;
         };
-        expect(coolant(idling, 120)).toBeCloseTo(expected(tauIdle, -4.5, 120), 6);
-        expect(coolant(loaded, 120)).toBeCloseTo(expected(tauLoad, 2.4, 120), 6);
+        expect(coolant(idling, 120)).toBeCloseTo(expected(tauIdle, -3 - 0.14 * 2, 120), 6);
+        expect(coolant(loaded, 120)).toBeCloseTo(expected(tauLoad, 1.1 - 0.14 * 15, 120), 6);
         // At the reference state the trait is used as it is.
-        expect(coolant(reference, 160)).toBeCloseTo(expected(160, -4.5, 160), 6);
+        expect(coolant(reference, 160)).toBeCloseTo(expected(160, -3 - 0.14 * 10, 160), 6);
         // Oil follows the same scaled τ (× 1.6).
         expect(idling.value(0x5c, 120, noJitter)).toBeCloseTo(30 + (93 + 8 - 30) * (1 - Math.exp(-120 / (tauIdle * 1.6))), 6);
     });
@@ -175,6 +179,9 @@ describe('DefaultDrivingModel', () => {
         expect(winter.value(0x0f, 0, noJitter)).toBeCloseTo(42 - 25.4, 5);
         expect(winter.value(0x68, 0, noJitter)).toBeCloseTo(42 - 25.4, 5);
         expect(new DefaultDrivingModel({traits: {intakeTempC: 42, ambientC: 5}}).value(0x0f, 0, noJitter)).toBe(42); // no fit: nothing to shift from
+        // The warm thermostat runs 0.2 °C hotter per degree the day is cooler (−0.7 correlation over 81 recordings).
+        expect(winter.value(0x05, 100_000, noJitter)).toBeCloseTo((recorded.value(0x05, 100_000, noJitter) ?? 0) + 0.2 * 25.4, 5);
+        expect(winter.value(0x05, 0, noJitter)).toBeCloseTo(recorded.value(0x05, 0, noJitter) ?? 0, 5); // cold start: no thermostat yet
     });
 
     it('gates the gear ratio on motion and reports the configured fuel type', () => {

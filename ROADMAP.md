@@ -118,8 +118,8 @@ What is left from it:
   `CLONE_OBDII_ADAPTER`, not modelled.
 - **PID `A4` ratios.** The gear comes from a generic seven-speed table; the
   car's own ratios need more moving `A4` samples (29 exist).
-- **Key-on voltage** is a guess (12.4 V); no recording has the key on with
-  the engine off for long.
+- **Key-on voltage** — recorded 2026-10-01 (3.5 minutes at a filling
+  station): 12.4 V right after the stop, sagging to 12.1 V; modelled.
 
 ### 2.2d The 2026-09-28 review (15 new sessions, 131 in all) — done on 2026-09-28
 
@@ -135,10 +135,9 @@ banner. Left from it:
   engine-off coasting; the coasting one won (`COASTING_WEIGHT` 0.5 in
   `tools/import-vehicle/cycle.ts`). More recordings with load/throttle on
   display will give the importer better windows.
-- **Post-crank voltage**: two recordings ramp 13.3 → 13.8 V over the first
-  minute, but across the corpus the first 90 s of `ATRV` sit anywhere
-  between −0.7 and +0.4 V of the session's median with no common shape —
-  not modelled until a recording starts before the engine does.
+- **Post-crank voltage** — done 2026-10-02 from the first recorded crank
+  (12.1 → 13.1 → 13.9 V, τ ≈ 12 s): `ATRV` and PID `42` climb back to
+  charging level after `setIgnition('running')` and at power-on.
 - **Thermostat-opening dip**: 25 of 68 warm restarts dip ≥ 4 °C within four
   minutes, 43 do not; the median profile is flat. Not modelled.
 - **`0100` after a reset** now takes the whole window (adaptive timing
@@ -148,6 +147,42 @@ banner. Left from it:
   it drops input during its own ATZ is unknown.
 - The importer's `68` (IAT sensors) constant of 54 °C comes from one hot
   session; `intakeTempC` (40) is what the intake PIDs actually use.
+
+### 2.2e The 2026-10-01/02 reviews (20 new sessions, 151 in all) — done on 2026-10-02
+
+Every drive replays with the recorded line structure on ≥ 99.9 % of
+exchanges (the three recordings of 2026-10-02 included); the asleep car (`ATSP7` → `NO DATA` in 135 ms, `ATSP0` → 7.1 s
+of `SEARCHING...` then `UNABLE TO CONNECT`) matches the simulator as it
+was. Built: the key-on stop (`setIgnition('key-on')` from running rejects
+for 3 s, then answers with the engine at rest and the temperatures held;
+battery sag), the alternator ramp after a start, `ATRV` at charging level
+while coasting, the thermostat's load and day terms (light-load cruises reach
+101–104 °C as recorded; cool days run hotter — the remaining per-session
+bias of ±4 °C is the weather, correlation −0.7 with the intake temperature), the importer fitting on the running engine only,
+the default vehicle regenerated (137 sessions to 2026-10-02). Left from it:
+
+- **The default drive still idles for 9 s only.** At 80 km/h top speed the
+  corpus offers five qualifying windows, at 70 km/h 24; none has both
+  ≥ 8 % standstill and ≥ 3 % engine-off coasting. Unchanged.
+- **The engine-stop exchange.** The last request answered before an engine
+  stop shows the engine ECU's data, then `7F0122` from a third module, then
+  the TCM's line, in that order, in four of the new recordings. One
+  exchange per stop; not modelled.
+- **Frame interleaving.** In 11 of 332 166 multi-frame responses the TCM's
+  single frame lands between the engine ECU's segments
+  (`0:…|410C0FC00D06|1:…`). Consumers' parsers should cope; the simulator
+  never does it.
+- **Cranking.** The ECU reported 178 rpm and speed `FF` for one answer
+  while the starter turned; the simulator jumps from 0 to idle.
+- **With the key on** the real LTFT reads −100 % (`410700`), the intake air
+  warms 4 °C in 3.5 minutes of heat soak and the coolant gains 1 °C before
+  holding; the simulator keeps the trim and holds both temperatures.
+- Actual torque `62` lost its fit (R² 0.48 with the running-engine filter,
+  threshold 0.5) and runs on the generic formula again.
+- **The cold start is S-shaped.** The 2026-10-02 cold start sits at 58 °C
+  for the first two minutes, then climbs 65 → 88 °C in two more; the
+  exponential warm-up is 10 °C ahead at two minutes and right at five.
+  Not modelled (one more clean cold start; the shape was seen before).
 
 ### 2.3 Reject a forced protocol the vehicle does not speak
 

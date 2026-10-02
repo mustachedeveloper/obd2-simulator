@@ -6,11 +6,34 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-From the 2026-09-28 review of 15 new recordings (131 real sessions in
-all, two of them from an Android phone; every drive replays through the
-simulator with the recorded line structure on ≥ 99.99 % of exchanges).
+From the 2026-10-01/02 reviews of 20 new recordings (151 real sessions in all;
+every drive replays with the recorded line structure on ≥ 99.9 % of
+exchanges) and the 2026-09-28 review of 15 before them (131 then, two from
+an Android phone).
 
 ### Added
+
+- **Key on, engine stopped — from a recording.** One recording holds 3.5
+  minutes with the key on at a filling station, the first look at what the
+  car answers with the engine off. `setIgnition('key-on')` now does what it
+  showed: an engine that was running first rejects every request with
+  `7F xx 22` for 3 s (recorded 3–4 s there, ≈ 1 s on a start-stop restart;
+  `afterRunMs` sets the phase for 'key-on' as it does for 'off' — `0` to
+  skip it, also `ignition key-on 0` on the control channel), then answers
+  with the engine at rest: rpm, speed, load, airflow, fuel rate, run time
+  and torque 0, manifold at atmospheric, timing 0°, no short-term trim,
+  fuel system status 0, commanded lambda full lean, the wide-band sensor
+  at stoichiometry — and the coolant, oil and exhaust temperatures **hold
+  the moment the engine stopped** (they used to drop to the cold-start
+  values of the drive's first second). The battery sags ≈ 0.08 V a minute
+  (`ATRV` and PID `42`: 12.4 → 12.1 V in 3.5 minutes, as recorded; bounded
+  at −0.5 V). From 'off' the key-on car is cold and answers at once.
+  `DrivingModel.value()` takes an optional `{engineStopped}` context for
+  this; models that ignore it keep working.
+- **The alternator climbs back after a start.** `ATRV` and PID `42` sit
+  ≈ 0.9 V under charging level right after `setIgnition('running')` (and at
+  power-on) and recover with τ ≈ 12 s: the recorded crank went 12.1 → 13.1
+  → 13.9 V within half a minute.
 
 - **Engine-off coasting.** The car shuts its engine while rolling (300
   episodes in the new recordings, 2–20 s each, 8 % of the time on the move;
@@ -53,6 +76,35 @@ simulator with the recorded line structure on ≥ 99.99 % of exchanges).
 
 ### Changed
 
+- **The warm coolant follows speed and load.** 46 534 warm readings in 91
+  recordings, fitted on both at once: the thermostat's swing runs from
+  ≈ 3 °C under the target standing to 3 °C over it at 80 km/h *and* 0.14 °C
+  lower per percent of load above 20 % — a light-load cruise sits at
+  97–98 °C with excursions to 101–104 (2.6 % of the warm readings; the model
+  topped out at 100), a loaded stretch at the same speed at 90–91. The
+  2026-09-28 finding that "load explains nothing" held only before the
+  speed was accounted for. Synthetic-cycle fingerprints moved (PIDs 05, 67).
+  The day counts too: session by session the warm coolant sits 0.2 °C lower
+  per degree of warmer air (correlation −0.7 with the ambient and intake
+  temperatures over 81 recordings — the map thermostat runs hotter in cool
+  weather), so `traits.ambientC` moving a recorded vehicle to a colder day
+  now raises its operating temperature by that much (a 5 °C day on the
+  default car: +4.6 °C). Checked on the three recordings that arrived after
+  the fit: residual 2.8 °C rms where the speed-only model had 4.0, and the
+  rest of their error is the day (+2 … +4.5 °C on 22–28 °C October
+  mornings against the 28 °C recorded reference).
+- The default vehicle is regenerated from 137 sessions to 2026-10-02: the
+  car's latest state (odometer 51 890 km, a full tank — it was refuelled on
+  2026-10-01 —, 113 warm-ups, 3 581 km since clear, 94 °C target,
+  28 °C day, +9 ignition cycles), boost control `70` constant 101.5 kPa
+  added, actual torque `62` back on the generic formula (R² 0.48), ambient
+  `46` a constant 28 °C.
+- **The importer fits signals on the running engine only** (rpm ≥ 300):
+  what a stopped engine reports — key on at the pump, coasting engine-off —
+  is the model's engine-off table, not a point on the fit. The key-on
+  recording alone had put 73 atmospheric manifold readings into PID `0B`
+  and cost it its fit; with the filter it fits better than before (R² 0.63,
+  was 0.51) and `07` stays a constant.
 - **The warm-up follows the heat put in.** `traits.coolantWarmupTauS` is
   now the time constant at a reference state (1500 rpm, 30 % load,
   `WARMUP_REFERENCE_STATE`); the model scales it by the rpm × load produced
@@ -76,6 +128,9 @@ simulator with the recorded line structure on ≥ 99.99 % of exchanges).
 
 ### Fixed
 
+- `ATRV` read battery voltage (12.4 V) while the car coasted with the
+  engine off; it stays at charging level, as PID `42` already did and every
+  recording shows (13.7–13.9 V through the engine-off stretches).
 - The reset banner is preceded by two blank lines (`ATZ\r\r\rELM327
   v2.3`), as every recording of every adapter and the ELM327 datasheet show;
   it was one.

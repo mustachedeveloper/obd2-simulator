@@ -12,11 +12,13 @@ import {
 } from '../src/index';
 import type {AdapterPersona} from '../src/index';
 import {applyControlCommand} from '../src/node/control';
+import {CYCLE} from '../src/vehicles/gasoline/driving';
 import {SYNTHETIC_GASOLINE_PROFILE} from './helpers/synthetic';
 
-// Behaviour read off the real-vehicle recordings (110 sessions, four
+// Behaviour read off the real-vehicle recordings (148 sessions, four
 // adapters): the engine ECU's after-run phase, the vLinker's frame-counting
-// response hint and the gear-only layout of PID A4.
+// response hint, the gear-only layout of PID A4, and the key-on stop at a
+// filling station.
 
 const lines = (text: string) => text.split('\r').filter(Boolean);
 
@@ -97,7 +99,99 @@ describe('engine after-run phase', () => {
         clock.ms += 10_000;
         expect(engine.handleCommand('010C 1')).toBe('NO DATA');
         expect(applyControlCommand('ignition off soon', [engine])).toMatch(/^error ignition off expects/);
-        expect(applyControlCommand('ignition running 5', [engine])).toMatch(/^error .*only.*off/);
+        expect(applyControlCommand('ignition running 5', [engine])).toMatch(/^error .*running/);
+    });
+});
+
+describe('key on, engine stopped (recorded 2026-10-01: 3.5 minutes at a filling station)', () => {
+    const byteAt = (response: string, index: number) => Number.parseInt(response.slice(4 + index * 2, 6 + index * 2), 16);
+    const tempOf = (response: string) => byteAt(response, 0) - 40;
+    const voltsOf = (response: string) => (byteAt(response, 0) * 256 + byteAt(response, 1)) / 1000;
+
+    it('rejects for three seconds after the engine stops, then answers with the engine at rest and the temperatures held', () => {
+        const {engine, clock} = recordedCar();
+        clock.ms += 300_000; // five minutes into the drive: warm
+        const coolantBefore = tempOf(engine.handleCommand('0105 1'));
+        const oilBefore = tempOf(engine.handleCommand('015C 1'));
+        engine.setIgnition('key-on');
+        expect(engine.handleCommand('010C 1')).toBe('7F0122');
+        expect(engine.handleCommand('03')).toBe('7F0322');
+        clock.ms += 2_999;
+        expect(engine.handleCommand('010C 1')).toBe('7F0122');
+        clock.ms += 1;
+        expect(engine.handleCommand('010C 1')).toBe('410C0000');
+        expect(engine.handleCommand('010D 1')).toBe('410D00');
+        expect(engine.handleCommand('0104 1')).toBe('410400');
+        expect(engine.handleCommand('010B 1')).toBe('410B65'); // manifold at atmospheric
+        expect(engine.handleCommand('010E 1')).toBe('410E80'); // timing 0°
+        expect(engine.handleCommand('0144 1')).toBe('4144FFFF'); // commanded lambda full lean
+        expect(engine.handleCommand('015E 1')).toBe('415E0000');
+        expect(engine.handleCommand('011F 1')).toBe('411F0000');
+        expect(engine.handleCommand('0103 1')).toBe('41030000'); // fuel system off
+        expect(engine.handleCommand('0106 1')).toBe('410680'); // no short-term trim
+        expect(engine.handleCommand('0143 1')).toBe('41430000');
+        expect(engine.handleCommand('0162 1')).toBe('41627D');
+        const lambda = engine.handleCommand('0134 1'); // wide-band at stoichiometry, no pump current
+        expect((byteAt(lambda, 0) * 256 + byteAt(lambda, 1)) / 32768).toBeCloseTo(1, 1);
+        expect(Math.abs((byteAt(lambda, 2) * 256 + byteAt(lambda, 3)) / 256 - 128)).toBeLessThan(0.2);
+        // The temperatures hold the moment the engine stopped, ten minutes later too.
+        clock.ms += 600_000;
+        expect(Math.abs(tempOf(engine.handleCommand('0105 1')) - coolantBefore)).toBeLessThanOrEqual(1);
+        expect(Math.abs(tempOf(engine.handleCommand('015C 1')) - oilBefore)).toBeLessThanOrEqual(1);
+        expect(engine.handleCommand('010C 1')).toBe('410C0000');
+    });
+
+    it('lets the battery sag with the key on: 12.4 V at the stop, 12.1 V after 3.5 minutes', () => {
+        const {engine, clock} = recordedCar();
+        engine.setIgnition('key-on', {afterRunMs: 0});
+        const atStop = Number.parseFloat(engine.handleCommand('ATRV'));
+        expect(atStop).toBeGreaterThan(12.2);
+        expect(atStop).toBeLessThan(12.6);
+        expect(voltsOf(engine.handleCommand('0142 1'))).toBeCloseTo(12.4, 0);
+        clock.ms += 210_000;
+        expect(Number.parseFloat(engine.handleCommand('ATRV'))).toBeLessThan(12.3);
+        expect(voltsOf(engine.handleCommand('0142 1'))).toBeLessThan(12.25);
+        clock.ms += 3_600_000; // bounded: a healthy battery does not drain through the ECUs in an hour
+        expect(Number.parseFloat(engine.handleCommand('ATRV'))).toBeGreaterThan(11.7);
+    });
+
+    it('climbs from ≈ 13.1 V back to charging level within half a minute of a start', () => {
+        const {engine, clock} = recordedCar();
+        engine.setIgnition('key-on', {afterRunMs: 0});
+        clock.ms += 60_000;
+        engine.setIgnition('running');
+        const justStarted = Number.parseFloat(engine.handleCommand('ATRV'));
+        expect(justStarted).toBeGreaterThan(12.9);
+        expect(justStarted).toBeLessThan(13.5);
+        expect(voltsOf(engine.handleCommand('0142 1'))).toBeLessThan(13.3);
+        clock.ms += 60_000;
+        expect(Number.parseFloat(engine.handleCommand('ATRV'))).toBeGreaterThan(13.8);
+        expect(voltsOf(engine.handleCommand('0142 1'))).toBeGreaterThan(13.7);
+    });
+
+    it('keeps ATRV at charging level while coasting with the engine off, as PID 42 and every recording do', () => {
+        const {engine, clock} = recordedCar();
+        const second = CYCLE.rpm.findIndex((rpm, index) => rpm === 0 && (CYCLE.speedKmh[index] ?? 0) >= 1);
+        expect(second).toBeGreaterThan(60); // the alternator ramp is over by then
+        clock.ms += second * 1000;
+        expect(engine.handleCommand('010C 1')).toBe('410C0000');
+        expect(Number.parseFloat(engine.handleCommand('ATRV'))).toBeGreaterThan(13.6);
+        expect(voltsOf(engine.handleCommand('0142 1'))).toBeGreaterThan(13.7);
+    });
+
+    it('answers a cold car at once when the key comes on from off, and takes the phase as an option', () => {
+        const {engine, clock} = recordedCar();
+        engine.setIgnition('off', {afterRunMs: 0});
+        engine.setIgnition('key-on');
+        expect(engine.handleCommand('010C 1')).toBe('410C0000');
+        expect(Math.abs(tempOf(engine.handleCommand('0105 1')) - 47)).toBeLessThanOrEqual(1); // coolantStartC
+        engine.setIgnition('running');
+        engine.setIgnition('key-on', {afterRunMs: 10_000});
+        clock.ms += 9_999;
+        expect(engine.handleCommand('010D 1')).toBe('7F0122');
+        clock.ms += 1;
+        expect(engine.handleCommand('010D 1')).toBe('410D00');
+        expect(() => engine.setIgnition('running', {afterRunMs: 1})).toThrow('running');
     });
 });
 
@@ -242,7 +336,8 @@ describe('adapter details from the probe sessions', () => {
     });
 
     it('answers ATIGN and ATCS on the OBDBLE clone, which reads the battery high', () => {
-        const {engine} = recordedCar(CLONE_V21_ADAPTER);
+        const {engine, clock} = recordedCar(CLONE_V21_ADAPTER);
+        clock.ms += 60_000; // past the alternator's ramp after the start
         expect(engine.handleCommand('ATIGN')).toBe('ON');
         expect(engine.handleCommand('ATCS')).toBe('OK');
         expect(Number.parseFloat(engine.handleCommand('ATRV'))).toBeGreaterThan(15);
@@ -298,7 +393,7 @@ describe('mode 04 reaches more modules than mode 01', () => {
         });
         for (const command of ['ATE0', 'ATS0', 'ATSP7']) engine.handleCommand(command);
         expect(lines(engine.handleCommand('04'))).toEqual(['7F0422', '7F0422', '7F0422', '7F0422']);
-        engine.setIgnition('key-on');
+        engine.setIgnition('key-on', {afterRunMs: 0});
         expect(lines(engine.handleCommand('04'))).toEqual(['44', '7F0478', '44', '7F0478']);
     });
 
