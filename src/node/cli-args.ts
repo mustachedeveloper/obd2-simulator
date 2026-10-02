@@ -8,7 +8,7 @@ import {PROFILE_ALIASES, type ProfileAlias} from './profile-aliases';
 // and every malformed value produces a specific message instead of the
 // generic usage text.
 
-export interface CliOptions {
+interface CliOptions {
     port: number;
     host: string;
     // Chosen with --simulator <id>, or through the older --profile <name>.
@@ -26,7 +26,7 @@ export type CliParseResult =
     | {kind: 'list-simulators'}
     | {kind: 'error'; message: string};
 
-export const DEFAULT_CLI_OPTIONS: CliOptions = {
+const DEFAULT_CLI_OPTIONS: CliOptions = {
     port: 35000,
     host: '0.0.0.0',
     simulator: SIMULATORS[DEFAULT_SIMULATOR_ID],

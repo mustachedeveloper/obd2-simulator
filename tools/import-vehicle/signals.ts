@@ -222,7 +222,7 @@ function constantFit(values: readonly number[], min: number, max: number, span: 
     };
 }
 
-export interface FitDiagnosis {
+interface FitDiagnosis {
     pid: number;
     samples: number;
     /**

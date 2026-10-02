@@ -21,7 +21,7 @@ export interface IdentityOptions {
     vinSerial: string;
 }
 
-export interface IdentityReport {
+interface IdentityReport {
     /**
      * Advertised by the vehicle, but the simulator has no encoder for them.
      */

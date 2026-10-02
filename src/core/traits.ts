@@ -97,7 +97,7 @@ export function warmupTauScale(meanHeat: number): number {
     return Math.min(WARMUP_TAU_SCALE_MAX, Math.max(WARMUP_TAU_SCALE_MIN, scale));
 }
 
-export const DEFAULT_TRAITS: VehicleTraits = {
+const DEFAULT_TRAITS: VehicleTraits = {
     idleRpm: 800,
     coolantStartC: 22,
     coolantTargetC: 90,

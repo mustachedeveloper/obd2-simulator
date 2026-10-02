@@ -9,7 +9,7 @@ const LENGTH_LINE = /^[0-9A-F]{3}$/;
 const SEGMENT_LINE = /^([0-9A-F]):([0-9A-F]+)$/;
 const SEQUENCE_MODULO = 16;
 
-export const normalizeCommand = (command: string): string => command.replace(/\s+/g, '').toUpperCase();
+const normalizeCommand = (command: string): string => command.replace(/\s+/g, '').toUpperCase();
 
 /**
  * Command without the trailing response-count hint ('010C 1' → '010C').

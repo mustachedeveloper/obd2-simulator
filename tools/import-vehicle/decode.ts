@@ -20,7 +20,7 @@ const torque = (bytes: readonly number[]): number => (bytes[0] ?? 0) - 125;
  * Physical value of the data bytes, per PID — the inverse of PID_ENCODERS
  * for the channels the importer fits (first sensor of multi-sensor PIDs).
  */
-export const DECODERS: Readonly<Record<number, Decoder>> = {
+const DECODERS: Readonly<Record<number, Decoder>> = {
     0x04: pct,
     0x0c: (b) => word(b, 0) / 4,
     0x0d: (b) => b[0] ?? 0,
