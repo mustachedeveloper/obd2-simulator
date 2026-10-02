@@ -137,6 +137,9 @@ an Android phone).
   selected but the removed `--profile hybrid`. Its one mechanism,
   `DefaultDrivingModel({engineOffAtStandstill: true})`, stays. The synthetic
   single-ECU gasoline car it was built on is now a test helper only.
+- The typedoc API reference (`npm run docs`, the GitHub Pages workflow):
+  never published, and the README documents the whole surface. `typedoc`
+  is no longer a dev dependency.
 
 ### Fixed
 
