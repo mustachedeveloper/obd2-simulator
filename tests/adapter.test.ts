@@ -200,6 +200,15 @@ describe('batch requests and multi-frame framing', () => {
         expect(engine.handleCommand('010C0D')).toMatch(/^410C[0-9A-F]{4}0D[0-9A-F]{2}$/);
     });
 
+    it('answers commanded lambda (0x44) with 2 bytes so the PID after it stays aligned', () => {
+        // Up to 0.3.1 PID 0x44 was 4 bytes wide; a client reading the J1979
+        // 2 bytes took the padding for the next PID and lost the rest of the batch.
+        const engine = engineWith();
+        expect(engine.handleCommand('0144')).toMatch(/^4144[0-9A-F]{4}$/);
+        expect(engine.handleCommand('014404')).toMatch(/^4144[0-9A-F]{4}04[0-9A-F]{2}$/);
+        expect(engine.handleCommand('01440D')).toMatch(/^4144[0-9A-F]{4}0D[0-9A-F]{2}$/);
+    });
+
     it('prints the ISO-TP long form when the payload exceeds 7 bytes', () => {
         const engine = engineWith();
         const parts = lines(engine.handleCommand('010C0D0504'));
